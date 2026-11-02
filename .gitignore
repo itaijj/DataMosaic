@@ -15,5 +15,9 @@ examples/extract/invoice/docs_text/
 examples/extract/invoice/output/
 examples/extract/invoice/dbmosaic_work/
 examples/extract/invoice/answer.json
+examples/extract/invoice/answer_status.json
+examples/extract/invoice/results.json
+examples/extract/invoice/docs_answer/
+examples/extract/invoice/single/
 examples/extract/invoice/history/
 examples/extract/invoice/logs/

@@ -1,6 +1,8 @@
 # PDF extraction and plan-review reports
 
-`run_extractions.py` runs the **DBMosaic agent engine** in `module/DBMosaic`:
+`run_extractions.py` runs the **DBMosaic agent engine** in `module/DBMosaic`
+for a whole directory of PDFs, `run_extraction.py` for a single PDF, and
+`add_to_results.py` merges single-document results into one cumulative file:
 
 ```text
 PDFs → Docling text → extraction → verification → repair → enriched JSON
@@ -220,6 +222,81 @@ identify a single responsible PDF. A successful shared run counts converted
 PDFs as processed; that count is not a guarantee that every expected row was
 extracted. Status is also written on these conversion/shared-run failures.
 
+## 4a. Run extraction on a single document
+
+`run_extraction.py` runs the same DBMosaic pipeline (Docling conversion,
+agent loop, enrichment) for **one PDF** instead of a whole directory. It
+reuses the helpers from `run_extractions.py`, so schema handling, engine
+credentials, provenance enrichment, and output record format are identical;
+only the requested PDF is converted and submitted.
+
+```bash
+module/DBMosaic/.venv/bin/python run_extraction.py \
+  examples/extract/plan_review/docs/sample_01.pdf \
+  --model gpt-4o
+```
+
+Paths follow the same directory convention as the multi-document script:
+
+```text
+examples/extract/plan_review/
+├── schema.json                        # default schema (<docs_dir>/../schema.json)
+├── docs/sample_01.pdf                 # input document
+└── single/
+    ├── sample_01.json                 # single-entry output (default)
+    └── dbmosaic_work/                  # Docling text and engine run artifacts
+```
+
+- **Output filename is derived from the input filename** by default:
+`<docs_dir>/../single/<PDF stem>.json`. Override it with `--output PATH`.
+- `--schema` and `--work-dir` override the schema and work directory;
+`--model`, `--api-base`, `--api-key` and `--timeout` behave exactly as in
+`run_extractions.py`.
+
+The single-entry JSON has this shape:
+
+```json
+{
+  "document": "sample_01.pdf",
+  "run_id": "<engine run id>",
+  "tables": {
+    "plan_review_report": [ ... ],
+    "rejection": [ ... ],
+    "code_reference": [ ... ]
+  }
+}
+```
+
+Each record carries the same automatic provenance fields (`_page_number`,
+`_raw_text`, `_source_document`, `_confidence`, `warnings`, `excluded`) as
+the multi-document output. The same entry is also written into the run's
+`result.json` artifact.
+
+## 4b. Merge a single entry into a cumulative results file
+
+`add_to_results.py` accumulates single-entry JSONs into one big results file
+with the same table-to-records shape as the multi-document `answer.json`:
+
+```bash
+module/DBMosaic/.venv/bin/python add_to_results.py \
+  examples/extract/plan_review/single/sample_01.json \
+  --results examples/extract/plan_review/results.json
+```
+
+- `--results` selects the cumulative file (default `results.json` in the
+current directory); it is created if missing.
+- Records are appended per table. A record already present for the same
+table (same `tuple_id`, or the same values when `tuple_id` is empty) is
+**replaced** by the incoming one, so re-merging an entry never duplicates
+records.
+- `--replace` first removes the entry document's previous records from
+every table (matched via `_source_document`) before adding the new ones.
+
+This supports an incremental workflow: run `run_extraction.py` per document
+as it arrives, then merge each single-entry JSON into the shared results
+file, or seed the results file from a full `run_extractions.py` run and add
+new documents afterwards.
+
 ## 5. Generate the category report later, without another extraction
 
 After extraction has produced `answer.json`, run:
@@ -293,19 +370,34 @@ run_extractions.py DOCS_DIR [OUTPUT_JSON]
   [--schema SCHEMA.json] [--model MODEL]
   [--api-base URL] [--api-key KEY]
   [--timeout SECONDS] [--work-dir DIR] [--status-output PATH]
+
+run_extraction.py DOC.pdf
+  [--schema SCHEMA.json] [--output OUT.json]
+  [--model MODEL] [--api-base URL] [--api-key KEY]
+  [--timeout SECONDS] [--work-dir DIR]
+
+add_to_results.py ENTRY.json [--results RESULTS.json] [--replace]
 ```
+
+`run_extraction.py` arguments:
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `DOCS_DIR` | required | Directory containing PDFs |
-| `OUTPUT_JSON` | `<docs_dir>/../answer.json` | Merged enriched table output |
-| `--schema` | `<docs_dir>/../schema.json` | Schema with `tables`, `fields`, constraints and descriptions |
+| `DOC.pdf` | required | Single source PDF |
+| `--schema` | `<docs_dir>/../schema.json` | Same schema format as `run_extractions.py` |
+| `--output` | `<docs_dir>/../single/<PDF stem>.json` | Single-entry output JSON, derived from the input filename |
 | `--model` | shell `MODEL`, otherwise `gpt-4o` | Model identifier |
-| `--api-base` | shell `API_BASE` | Bootstrap only when `.env` is missing; not the engine's `API_URL` setting |
-| `--api-key` | shell `API_KEY` | Bootstrap key; existing `.env` is untouched |
-| `--timeout` | shell `TIMEOUT`, otherwise `3600` | Shared agent run timeout in seconds |
+| `--api-base` / `--api-key` | shell `API_BASE` / `API_KEY` | Bootstrap only when `.env` is missing; not the engine's `API_URL` setting |
+| `--timeout` | shell `TIMEOUT`, otherwise `3600` | Agent run timeout in seconds |
 | `--work-dir` | `<output dir>/dbmosaic_work` | Converted text and engine artifacts |
-| `--status-output` | `<output stem>_status.json` beside output | Document status JSON |
+
+`add_to_results.py` arguments:
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `ENTRY.json` | required | Single-entry JSON written by `run_extraction.py` |
+| `--results` | `results.json` in the current directory | Cumulative table-to-records JSON; created if missing |
+| `--replace` | off | Drop the entry document's old records (via `_source_document`) before merging |
 
 `run_plan_review.py` accepts the same positional paths and forwards extraction
 options when launching extraction. Its additional options are:
