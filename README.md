@@ -120,6 +120,8 @@ For a direct multimodal question without the DocPilot pipeline, switch to the **
 
 Use it when you need a reusable database—for example, consolidating companies, reporting periods, revenue, and income across financial reports—and correctness depends on relationships across records as well as individual values.
 
+The same engine can be run headless from the command line on a directory of documents plus a schema: see [`run_extractions.py`](run_extractions.py) and [docs/run_extractions.md](docs/run_extractions.md) (worked example: `examples/extract/invoice/`).
+
 1. Open **Extract** from the home page. Upload source files to the file library and select the ones to process.
 2. Under **Processing Method**, choose **Description** to specify the desired information in natural language, or **Schema** to define tables, fields, and relationships.
 3. Click **Begin Analysis**, follow the extraction and verification stages, then inspect the generated records and database. Export the result from the DBMosaic workspace if needed.

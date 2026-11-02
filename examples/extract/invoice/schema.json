@@ -1,0 +1,70 @@
+{
+  "metadata": {
+    "version": "1.0.0",
+    "generator": "Invoice Database Designer",
+    "generated_at": "2026-10-31T00:00:00Z",
+    "tables_count": 5,
+    "relations_count": 4
+  },
+  "tables": [
+    {
+      "id": "table_1",
+      "name": "seller",
+      "type": "entity",
+      "fields": [
+        { "name": "name", "type": "VARCHAR(255)", "constraints": { "primary_key": true, "nullable": false }, "description": "Seller company or person name, e.g.: J&T Consumer Electronics" },
+        { "name": "address", "type": "VARCHAR(500)", "constraints": { "nullable": true }, "description": "Seller address, e.g.: 842 Bubby Dr., Austin, TX 78759" },
+        { "name": "phone", "type": "VARCHAR(100)", "constraints": { "nullable": true }, "description": "Seller phone number, e.g.: +1 (512) 425-0273" },
+        { "name": "email", "type": "VARCHAR(255)", "constraints": { "nullable": true }, "description": "Seller email address, e.g.: sales@softworxtechsol.net" }
+      ]
+    },
+    {
+      "id": "table_2",
+      "name": "buyer",
+      "type": "entity",
+      "fields": [
+        { "name": "name", "type": "VARCHAR(255)", "constraints": { "primary_key": true, "nullable": false }, "description": "Buyer company or person name, e.g.: Global Gadgets" },
+        { "name": "address", "type": "VARCHAR(500)", "constraints": { "nullable": true }, "description": "Buyer / bill-to address, e.g.: 4681 Beeghley St., Waco, TX 76706" },
+        { "name": "phone", "type": "VARCHAR(100)", "constraints": { "nullable": true }, "description": "Buyer phone number" },
+        { "name": "contact_person", "type": "VARCHAR(255)", "constraints": { "nullable": true }, "description": "Named contact at the buyer, e.g.: Nathan Miller" }
+      ]
+    },
+    {
+      "id": "table_3",
+      "name": "invoice",
+      "type": "entity",
+      "fields": [
+        { "name": "invoice_number", "type": "VARCHAR(100)", "constraints": { "primary_key": true, "nullable": false }, "description": "Invoice number, e.g.: 0298878900, 20001" },
+        { "name": "invoice_date", "type": "DATE", "constraints": { "nullable": true }, "description": "Invoice issue date, e.g.: 2020-02-10" },
+        { "name": "due_date", "type": "DATE", "constraints": { "nullable": true }, "description": "Payment due date, e.g.: 2020-03-11" },
+        { "name": "purchase_order_number", "type": "VARCHAR(100)", "constraints": { "nullable": true }, "description": "Referenced PO number, e.g.: 10002" },
+        { "name": "payment_terms", "type": "VARCHAR(100)", "constraints": { "nullable": true }, "description": "Payment terms, e.g.: NET 30" },
+        { "name": "currency", "type": "VARCHAR(10)", "constraints": { "nullable": true }, "description": "Currency of the amounts, e.g.: USD" },
+        { "name": "subtotal", "type": "DECIMAL(12,2)", "constraints": { "nullable": true }, "description": "Subtotal before tax and shipping, e.g.: 383.67" },
+        { "name": "tax", "type": "DECIMAL(12,2)", "constraints": { "nullable": true }, "description": "Sales tax amount, e.g.: 46.04" },
+        { "name": "shipping", "type": "DECIMAL(12,2)", "constraints": { "nullable": true }, "description": "Shipping and handling amount, e.g.: 25.00" },
+        { "name": "total", "type": "DECIMAL(12,2)", "constraints": { "nullable": true }, "description": "Invoice grand total, e.g.: 454.71" },
+        { "name": "seller_name", "type": "VARCHAR(255)", "constraints": { "foreign_key": true, "nullable": false }, "description": "Seller of this invoice, references seller.name" },
+        { "name": "buyer_name", "type": "VARCHAR(255)", "constraints": { "foreign_key": true, "nullable": false }, "description": "Buyer of this invoice, references buyer.name" }
+      ]
+    },
+    {
+      "id": "table_4",
+      "name": "line_item",
+      "type": "entity",
+      "fields": [
+        { "name": "invoice_number", "type": "VARCHAR(100)", "constraints": { "foreign_key": true, "nullable": false }, "description": "Invoice this line belongs to, references invoice.invoice_number" },
+        { "name": "line_id", "type": "VARCHAR(20)", "constraints": { "primary_key": true, "nullable": false }, "description": "Line identifier on the invoice, e.g.: 01, 02" },
+        { "name": "description", "type": "TEXT", "constraints": { "nullable": false }, "description": "Item or service description, e.g.: ASUS VIVOBOOK M509DA-BR719T SLATE GREY ..." },
+        { "name": "quantity", "type": "DECIMAL(10,2)", "constraints": { "nullable": true }, "description": "Quantity ordered, e.g.: 5" },
+        { "name": "unit_price", "type": "DECIMAL(12,2)", "constraints": { "nullable": true }, "description": "Price per unit, e.g.: 499.90" },
+        { "name": "total", "type": "DECIMAL(12,2)", "constraints": { "nullable": true }, "description": "Line total, e.g.: 2499.50" }
+      ]
+    }
+  ],
+  "relations": [
+    { "id": "ref_1", "type": "many-to-one", "from": { "table": "invoice", "field": "seller_name" }, "to": { "table": "seller", "field": "name" } },
+    { "id": "ref_2", "type": "many-to-one", "from": { "table": "invoice", "field": "buyer_name" }, "to": { "table": "buyer", "field": "name" } },
+    { "id": "ref_3", "type": "many-to-one", "from": { "table": "line_item", "field": "invoice_number" }, "to": { "table": "invoice", "field": "invoice_number" } }
+  ]
+}

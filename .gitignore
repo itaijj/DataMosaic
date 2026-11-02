@@ -8,3 +8,12 @@
 /web/dist/
 __pycache__/
 *.pyc
+
+# Extraction example artifacts: share only schema.json, not source PDFs or run outputs
+examples/extract/invoice/docs/
+examples/extract/invoice/docs_text/
+examples/extract/invoice/output/
+examples/extract/invoice/dbmosaic_work/
+examples/extract/invoice/answer.json
+examples/extract/invoice/history/
+examples/extract/invoice/logs/
