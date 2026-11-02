@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "datamosaic-local"
+version = "0.1.0"
+description = "Unified local dependencies for DataMosaic DBMosaic extraction and reporting"
+requires-python = ">=3.10"
+dynamic = ["dependencies", "optional-dependencies"]
+
+# This is a repository-local environment installer, not a standalone engine
+# distribution. Run the scripts from this checkout after initializing submodules.
+[tool.setuptools]
+py-modules = []
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["module/DBMosaic/requirements.txt", "requirements-extraction.txt"]}
+
+[tool.setuptools.dynamic.optional-dependencies]
+api = {file = ["api/requirements.txt"]}

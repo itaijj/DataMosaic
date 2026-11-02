@@ -11,13 +11,52 @@ PDFs → Docling text → extraction → verification → repair → enriched JS
 Run commands below from the repository root. The `.venv/bin/python` paths are
 for Linux/WSL, matching the configuration used here.
 
-## 1. Install dependencies
+## 1. Install all Python dependencies together
+
+Use **Python 3.10 or newer**. The repository-root `pyproject.toml` (Python's
+standard filename, not `pyproject.yaml`) combines:
+
+- All dependencies in `module/DBMosaic/requirements.txt`.
+- `requirements-extraction.txt`: **Docling, OpenAI and requests** for extraction.
+- An optional `api` extra for the root DataMosaic FastAPI service.
+
+From the repository root, initialize the submodule **before** installation:
 
 ```bash
 git submodule update --init module/DBMosaic
 python3 -m venv module/DBMosaic/.venv
-module/DBMosaic/.venv/bin/pip install -r module/DBMosaic/requirements.txt docling
+module/DBMosaic/.venv/bin/python -m pip install --upgrade pip
+module/DBMosaic/.venv/bin/python -m pip install -e .
 ```
+
+This replaces the separate requirements, Docling and OpenAI install commands.
+If the virtual environment already exists, skip creating it and run the last
+two commands with its interpreter. No activation is required.
+
+To also install the root API service's Python dependencies, use this instead
+of the final command:
+
+```bash
+module/DBMosaic/.venv/bin/python -m pip install -e '.[api]'
+```
+
+Verify the installation using the **same interpreter** that will run extraction:
+
+```bash
+module/DBMosaic/.venv/bin/python -m pip check
+module/DBMosaic/.venv/bin/python -c "import docling, openai, requests, dotenv; print('Extraction dependencies available')"
+```
+
+This project installs a **local Python environment**, not a standalone copy of
+DBMosaic. Keep the initialized checkout and run the scripts from the repository
+root. It does not install the web frontend's Node dependencies, start services,
+or configure credentials; see the [main README](../README.md) for full-platform
+setup. Docling may download model assets on its first conversion, so initial
+PDF processing can require network access and additional time/disk space.
+
+The dependencies are version ranges, not a reproducible lockfile. DBMosaic's
+requirements remain the source of truth for its dependencies; rerun the install
+command after changing them or updating the submodule.
 
 ## 2. Configure OpenAI
 

@@ -1,0 +1,6 @@
+# Additions required by the root extraction scripts; DBMosaic's full
+# requirements are also loaded by pyproject.toml.
+# OpenAI is explicit here as well so the extraction prerequisites are clear.
+docling>=2.0,<3
+openai>=1.0.0
+requests>=2.31,<3
