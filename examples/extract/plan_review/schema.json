@@ -1,0 +1,63 @@
+{
+  "metadata": {
+    "version": "1.0.0",
+    "generator": "Plan Review Database Designer",
+    "generated_at": "2026-11-02T00:00:00Z",
+    "tables_count": 3,
+    "relations_count": 2
+  },
+  "tables": [
+    {
+      "id": "table_1",
+      "name": "plan_review_report",
+      "type": "entity",
+      "description": "Create exactly one report row per source document. Use the source filename supplied in the document context, not a permit number, as the report identity. Generated identifiers are intentional metadata and need not appear in the report text.",
+      "fields": [
+        { "name": "id", "type": "VARCHAR(100)", "constraints": { "primary_key": true, "nullable": false }, "description": "Generated report ID: source filename stem with its final extension removed, preserving spelling and case. For sample_03.pdf (or its converted sample_03.txt), use sample_03. Never use a case number, address or random ID." },
+        { "name": "document", "type": "VARCHAR(500)", "constraints": { "nullable": true }, "description": "Original source PDF basename from the supplied source context, e.g. sample_03.pdf; not a placeholder such as meta.source_file." },
+        { "name": "jurisdiction", "type": "VARCHAR(255)", "constraints": { "nullable": true }, "description": "Jurisdiction explicitly issuing the report, e.g. City of Austin. Return null if not stated; do not guess from an address." }
+      ]
+    },
+    {
+      "id": "table_2",
+      "name": "rejection",
+      "type": "entity",
+      "description": "One row per distinct actionable review comment requiring a correction or additional information. Scan the entire document first. Enumerate comments in page order, then top-to-bottom reading order, across all disciplines. A continued comment remains one rejection; separate numbered comments remain separate even when their category or source item label repeats. Do not create rejections for headings, boilerplate, approvals or code citations alone. Generate IDs from this complete document-wide enumeration, never restart numbering per page or discipline. The same enumeration must be used by code_reference. Determine comment boundaries from reviewer labels such as BPEL1., BPEL2., ATD1. and their associated text. A Docling text block or page may contain several comments: split it at each new reviewer label, never treat the entire block as the first comment. A comment ends immediately before the next comment label or unrelated section heading, except for genuine continuation text across pages. Keep each source_item_id associated only with its own comment text and citations.",
+      "fields": [
+        { "name": "report_id", "type": "VARCHAR(100)", "constraints": { "foreign_key": true, "nullable": false }, "description": "Exact source filename stem used as plan_review_report.id, e.g. sample_03. All rejections in the same document share this report_id." },
+        { "name": "rejection_id", "type": "VARCHAR(100)", "constraints": { "primary_key": true, "nullable": false }, "description": "Required synthetic primary key, NOT extracted from raw text: <report_id>-<document-wide rejection ordinal padded to at least 3 digits>. Start at 001 for each document in page/reading order across all disciplines. For sample_03.pdf: sample_03-001, sample_03-002, etc. Preserve this ID when revisiting or repairing the same comment. Never use source_item_id alone; never merge distinct comments because their labels repeat." },
+        { "name": "source_item_id", "type": "VARCHAR(100)", "constraints": { "nullable": true }, "description": "Verbatim comment/item label printed in the source, e.g. BPEL1. This is NOT the generated rejection_id and may repeat. Return null when no label is printed; do not invent one." },
+        { "name": "discipline", "type": "VARCHAR(255)", "constraints": { "nullable": false }, "description": "Review discipline from the comment or its enclosing reviewer/section heading, e.g. Electrical, Building, Mechanical, Plumbing or Fire. Use Unspecified only when no discipline can be established from the document." },
+        { "name": "canonical_category", "type": "VARCHAR(255)", "constraints": { "nullable": true }, "description": "Concise standardized English category describing the actual correction requested, e.g. Panelboard overcurrent protection. Use consistent wording for equivalent issues; do not replace the issue with its ID or code citation. Return null if the issue cannot be determined." }
+      ]
+    },
+    {
+      "id": "table_3",
+      "name": "code_reference",
+      "type": "entity",
+      "description": "One row per distinct explicit code citation associated with an actionable rejection. Enumerate ALL rejection comments in document-wide page/reading order exactly as in rejection, including comments with no code citations, before assigning parent IDs. A comment with no qualifying citation produces no code_reference row but still occupies its rejection ordinal. A qualifying citation must contain a code name AND a specific section/article number; a code name alone (NEC, IBC) or edition plus code name alone (2023 NEC) is not sufficient. Omit incomplete citations rather than inventing section numbers. Multiple citations for one rejection share its rejection_id. Do not infer uncited codes or associate general report boilerplate with every rejection. MANDATORY PARENT MATCHING: first segment the document into individual reviewer-comment blocks using source item labels and reading order, then build the same comment-to-rejection_id mapping as the rejection table, THEN extract citations from each comment's own text. Attach a citation ONLY to the rejection represented by that same comment block, never merely to the first rejection on the page, in the Docling block, or in the document. If a Docling block contains BPEL1 and BPEL2, split at BPEL2; citations after BPEL2 belong to BPEL2 until the next comment starts. Shared page, discipline, category, broad evidence text or proximity outside the comment is NOT evidence of parentage. Code names/editions may be inherited from an explicit applicable heading, but the section/article citation must occur within the owning comment or its genuine continuation. Do not copy a citation to neighboring comments. If the parent cannot be established, omit the citation rather than defaulting to the first rejection. Example from sample_01.pdf: BPEL1 contains 2023 NEC 220 and maps to sample_01-001; BPEL2 contains 2023 NEC 250 and maps to sample_01-002. Therefore 2023 NEC 250 must have rejection_id sample_01-002 and id sample_01-002-code-001, NOT sample_01-001-code-002. BPEL3's 2023 NEC 408.4(A) belongs to sample_01-003. These are matching examples, not instructions to create citations absent from a source document.",
+      "fields": [
+        { "name": "id", "type": "VARCHAR(100)", "constraints": { "primary_key": true, "nullable": false }, "description": "Generated primary key: <rejection_id>-code-<citation ordinal padded to at least 3 digits>, numbered in citation appearance order within that rejection, e.g. sample_03-002-code-001. Assign this ID only AFTER matching the citation to its owning reviewer-comment block and generated parent rejection_id. Restart the citation ordinal at 001 for each parent, not for each page or document. The ID prefix must exactly equal this row's rejection_id followed by -code-. For sample_01.pdf, BPEL2's 2023 NEC 250 is sample_01-002-code-001, never sample_01-001-code-002. Deduplicate repeated identical citations within one rejection only; the same citation explicitly appearing in two different comments requires a separate row for each parent." },
+        { "name": "rejection_id", "type": "VARCHAR(100)", "constraints": { "foreign_key": true, "nullable": false }, "description": "Exact generated parent rejection.rejection_id, e.g. sample_03-002. Use the ordinal of the parent comment among ALL rejections in this document, not the ordinal among comments containing citations; never use the printed source_item_id as this foreign key. Use source_item_id internally to match the citation's enclosing reviewer comment to its generated rejection_id. The section/article must be present in that comment's text, not only elsewhere on the page or in a multi-comment Docling block. Example: 2023 NEC 250 in sample_01.pdf is inside BPEL2, so this foreign key MUST be sample_01-002, not sample_01-001. Never use the first rejection as a fallback for missing or ambiguous parentage." },
+        {
+          "name": "code_reference",
+          "type": "VARCHAR(255)",
+          "constraints": { "nullable": false },
+          "description": "A single string containing a code name AND an explicit section/article number. Normalize as '<edition year if stated> <code name> <section>', e.g. '2023 NEC 408.36', '2021 IBC 1006.2.1' or 'NEC 408.36' when no edition is stated. Preserve subsection suffixes such as 210.8(A)(1). Never output bare code names such as NEC or edition-only citations such as 2023 NEC. Resolve a code name or edition from an explicit enclosing heading when applicable, but never invent missing code names, editions or section numbers. Omit the citation row if the code name or section number cannot be established. Separate distinct citations into separate rows, each linked only to the reviewer comment in which that section/article occurs. First identify the owning comment by its source item label and local text boundaries; do not extract all citations from a whole page or multi-comment Docling block under one rejection.",
+          "format": "[edition year when explicitly stated] CODE SECTION, e.g. 2023 NEC 408.36; code name and section number are mandatory",
+          "business_rules": [
+            {
+              "type": "pattern",
+              "pattern": "\\A(?:(?:19|20)[0-9]{2} )?[A-Za-z][A-Za-z &/().-]* [0-9]+(?:\\.[0-9]+)*(?:[A-Za-z])?(?:\\([A-Za-z0-9]+\\))*\\Z",
+              "description": "Must be one code-name-plus-section citation, optionally prefixed by an explicit edition year: 2023 NEC 408.36, IBC 1006.2.1, or NEC 210.8(A)(1). Reject NEC, 2023 NEC, a number alone, null, empty values and lists of citations. Recover missing components only from explicit source evidence; otherwise omit the unsupported citation row rather than fabricate a section."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "relations": [
+    { "id": "ref_1", "type": "many-to-one", "from": { "table": "rejection", "field": "report_id" }, "to": { "table": "plan_review_report", "field": "id" } },
+    { "id": "ref_2", "type": "many-to-one", "from": { "table": "code_reference", "field": "rejection_id" }, "to": { "table": "rejection", "field": "rejection_id" } }
+  ]
+}

@@ -1,195 +1,313 @@
-# run_extractions.py — Document-to-Database Extraction via the DBMosaic Agent Engine
+# PDF extraction and plan-review reports
 
-`run_extractions.py` (repo root) turns a directory of source documents plus a
-target database schema into structured, relational records by driving the full **DBMosaic agent engine**
-(`module/DBMosaic`, the `Extract` engine described in the main
-[README](README.md)) through its orchestrated closed loop:
+`run_extractions.py` runs the **DBMosaic agent engine** in `module/DBMosaic`:
 
+```text
+PDFs → Docling text → extraction → verification → repair → enriched JSON
+                                                        → per-document JSON
+                                                        → document status JSON
 ```
-extraction → verification (constraint checks) → repair → final database
-```
 
-The engine mediates between LLM extraction and strict database logic: schema
-rules, foreign keys, and business constraints guide targeted corrections, so
-the result is a structurally sound database rather than a list of isolated
-fields.
+Run commands below from the repository root. The `.venv/bin/python` paths are
+for Linux/WSL, matching the configuration used here.
 
----
-
-## Quick start
+## 1. Install dependencies
 
 ```bash
-# 1. One-time setup
 git submodule update --init module/DBMosaic
 python3 -m venv module/DBMosaic/.venv
 module/DBMosaic/.venv/bin/pip install -r module/DBMosaic/requirements.txt docling
+```
 
-# 2. Run (invoice example from this repo)
+## 2. Configure OpenAI
+
+Create or edit **`module/DBMosaic/llm/.env`** (Windows path:
+`module\DBMosaic\llm\.env`). Configure the engine with these exact names:
+
+```dotenv
+API_URL=https://api.openai.com/v1/chat/completions
+API_KEY=YOUR_OPENAI_API_KEY
+LLM_REQUEST_TIMEOUT=300
+LLM_MAX_RETRIES=3
+LLM_RETRY_DELAY=3
+```
+
+Use your own OpenAI API key with access to `gpt-4o`. Keep this file untracked
+and do not share the key or put it in example JSON files.
+
+**Important:** `API_URL` must be the full chat-completions endpoint, **not**
+`https://api.openai.com/v1`. The engine posts directly to this URL; the base
+URL alone returns 404 and can cause `Expecting value: line 1 column 1` JSON
+parsing errors. The credential names read by this client are **`API_URL` and
+`API_KEY`**, not `OPENAI_BASE_URL` or `OPENAI_API_KEY`.
+
+The engine loads these values from `module/DBMosaic/llm/.env`; setting only
+shell variables is not a substitute for configuring that file. Select the
+model with `--model gpt-4o` when running the script.
+
+### Optional credential bootstrap
+
+If `.env` does not exist, `run_extractions.py` can create it using
+`--api-base https://api.openai.com/v1 --api-key ...` (or shell variables
+`API_BASE` and `API_KEY`). This is only a bootstrap convenience: it appends
+`/chat/completions` and writes `API_URL`/`API_KEY` to `.env`.
+
+An existing `.env` is **never overwritten**, so these flags do not override
+its credentials. Editing the file directly as above is the recommended setup
+and avoids putting the key in shell history.
+
+## 3. Put PDFs in the plan-review input directory
+
+```text
+examples/extract/plan_review/
+├── schema.json
+└── docs/
+    ├── sample_01.pdf
+    ├── sample_02.pdf
+    ├── sample_03.pdf
+    └── sample_04.pdf
+```
+
+Place your input PDFs directly in **`examples/extract/plan_review/docs/`**.
+The script scans `*.pdf` in that directory, not nested directories; use the
+lowercase `.pdf` extension. Each PDF should have a distinct filename stem.
+
+The supplied `schema.json` has three tables: `plan_review_report`, `rejection`,
+and `code_reference`. Table/field descriptions guide extraction, including:
+
+- Report IDs use the source filename stem, e.g. `sample_03`.
+- Rejection IDs use document-wide reading order, e.g. `sample_03-001`.
+- Printed reviewer labels such as `BPEL2` stay in `source_item_id`.
+- Citations require a code name and section/article number, e.g.
+  `2023 NEC 408.36`; edition years must not be invented.
+- Citations belong to the enclosing reviewer comment, not the first comment
+  on a page or in a multi-comment Docling block. For example, `2023 NEC 250`
+  in sample_01's BPEL2 belongs to `sample_01-002`, with citation ID
+  `sample_01-002-code-001`.
+
+These matching/ID instructions are LLM-guided, not a deterministic ID
+allocator or a guarantee of correct associations. The citation field also
+has a regex business rule; the engine reports its violations as warnings
+for verification/repair rather than blocking output.
+
+## 4. Run extraction
+
+```bash
 module/DBMosaic/.venv/bin/python run_extractions.py \
-    examples/extract/invoice/docs \
-    examples/extract/invoice/answer.json \
-    --model model_id
-
-# 3. Inspect the result
-#    examples/extract/invoice/answer.json                        (final output)
-#    examples/extract/invoice/dbmosaic_work/runs/<run_id>/       (run artifacts)
+  examples/extract/plan_review/docs \
+  examples/extract/plan_review/answer.json \
+  --model gpt-4o
 ```
 
-## CLI usage
+The default schema is `schema.json` next to the `docs` directory. Output files
+are written alongside the specified `answer.json`:
 
-```
-python3 run_extractions.py DOCS_DIR [OUTPUT_JSON] [--schema SCHEMA.json]
-                            [--model MODEL] [--api-base URL] [--api-key KEY]
-                            [--timeout SECONDS] [--work-dir DIR]
+```text
+examples/extract/plan_review/
+├── answer.json                    # merged enriched tables
+├── answer_status.json             # processed count and filename → error lists
+├── docs_answer/
+│   ├── sample_01.json             # output for sample_01.pdf
+│   ├── sample_02.json
+│   ├── sample_03.json
+│   └── sample_04.json
+└── dbmosaic_work/
+    ├── docs_text/                 # filename context + page-marked Docling text
+    └── runs/<run_id>/             # engine logs, snapshots, violations and fixes
 ```
 
-| Argument | Default | Description |
+### Per-document output
+
+After `enrich_tables`, `write_document_answers` joins report rows, rejections,
+and their code references into **`docs_answer/<PDF stem>.json`**:
+
+```json
+{
+  "document": "sample_03.pdf",
+  "jurisdiction": "City of Austin, TX",
+  "rejections": [
+    {
+      "rejection_id": "sample_03-001",
+      "source_item_id": "BPEL1",
+      "discipline": "Electrical",
+      "raw_text": "Evidence text from the converted document",
+      "canonical_category": "Panelboard overcurrent protection",
+      "code_references": ["2023 NEC 408.36"],
+      "page": 3,
+      "source": "text",
+      "confidence": 0.9
+    }
+  ],
+  "excluded": [],
+  "warnings": []
+}
+```
+
+- `jurisdiction` is null when unidentified; no new jurisdiction is inferred
+  during this projection.
+- `source` is currently `text`, reflecting the text-based extraction pipeline;
+  it does not distinguish image or annotation origins.
+- `raw_text` preserves enriched Docling evidence. It may span multiple comments
+  or fall back to a full page; it is not guaranteed to be an isolated item.
+- `excluded` contains `{ "text": "...", "reason": "unmapped_evidence" }`
+  fragments not covered by extracted values. They are **not** confirmed
+  cleared comments.
+- `warnings` gathers per-file Docling/dependency warning and error logs,
+  Python warnings, structured conversion diagnostics, extraction violations,
+  and projection issues such as missing pages or ambiguous citation parents.
+  Conversion warnings are captured during the current run, not recoverable
+  from an old `answer.json` alone. Warning entries may be strings or structured
+  engine violation objects.
+- Per-document files are written only after successful enrichment, not from
+  the conversion or shared-engine failure paths.
+
+### Document status
+
+`answer_status.json` is separate from the unchanged table-based `answer.json`:
+
+```json
+{
+  "documents_processed": 3,
+  "documents_failed": {
+    "broken.pdf": ["PDF conversion failed: ValueError: invalid PDF"]
+  }
+}
+```
+
+Conversion failures are recorded per PDF and other PDFs continue. A PDF with
+no extractable text receives an error. If the shared engine run fails, every
+submitted document receives that shared error because the engine does not
+identify a single responsible PDF. A successful shared run counts converted
+PDFs as processed; that count is not a guarantee that every expected row was
+extracted. Status is also written on these conversion/shared-run failures.
+
+## 5. Generate the category report later, without another extraction
+
+After extraction has produced `answer.json`, run:
+
+```bash
+module/DBMosaic/.venv/bin/python run_plan_review.py \
+  examples/extract/plan_review/docs \
+  examples/extract/plan_review/answer.json \
+  --report-only
+```
+
+**`--report-only` is important:** it reads existing results and makes no LLM
+calls. Keep the matching `answer_status.json` beside `answer.json` so document
+counts and errors come from the extraction run. Older answers without a status
+file use row coverage as a fallback, with an explicit explanation for any
+PDF considered failed.
+
+The runner creates both **`examples/extract/plan_review/answer_report.json`**
+and **`examples/extract/plan_review/answer_report.md`**. The Markdown version
+includes totals, top five categories, a category statistics table, evidence
+examples and per-document failure errors. Both outputs use the same summary;
+Markdown displays the fractional percentages as human-readable percentages.
+
+JSON report format:
+
+```json
+{
+  "documents_processed": 4,
+  "documents_failed": {},
+  "total_rejections": 20,
+  "categories": [
+    {
+      "canonical_category": "GFCI protection",
+      "occurrences": 3,
+      "documents": 2,
+      "pct_of_documents": 0.5,
+      "pct_of_rejections": 0.15,
+      "by_discipline": {"Electrical": 3},
+      "examples": ["Evidence example one", "Evidence example two"]
+    }
+  ],
+  "top_5": ["GFCI protection"]
+}
+```
+
+The example is illustrative, not an expected result for the supplied PDFs.
+Categories are sorted by occurrence count descending (alphabetically on ties).
+Each final rejection row counts once; document counts are distinct source
+PDFs. Percentages are **fractions**, with processed documents and total
+rejections as their respective denominators. Up to two distinct `_raw_text`
+examples are included per category. Missing categories/disciplines are grouped
+as `Uncategorized`/`Unspecified`. Category labels are not semantically merged.
+
+To run extraction **and** reporting together instead:
+
+```bash
+module/DBMosaic/.venv/bin/python run_plan_review.py \
+  examples/extract/plan_review/docs \
+  examples/extract/plan_review/answer.json \
+  --model gpt-4o
+```
+
+Without `--report-only`, this wrapper launches `run_extractions.py` first.
+If extraction fails with a status file, it writes a failure report without
+summarizing a stale answer, then exits nonzero.
+
+## CLI reference
+
+```text
+run_extractions.py DOCS_DIR [OUTPUT_JSON]
+  [--schema SCHEMA.json] [--model MODEL]
+  [--api-base URL] [--api-key KEY]
+  [--timeout SECONDS] [--work-dir DIR] [--status-output PATH]
+```
+
+| Argument | Default | Meaning |
 |---|---|---|
-| `DOCS_DIR` | (required) | Directory containing the source documents (PDF) |
-| `OUTPUT_JSON` | `<docs_dir>/../answer.json` | Where the merged result is written |
-| `--schema` | `<docs_dir>/../schema.json` | Target database schema (JSON, see below) |
-| `--model` | `gpt-4o` (env `MODEL`) | Model id used by the engine |
-| `--api-base` | env `API_BASE` | OpenAI-compatible API base URL |
-| `--api-key` | env `API_KEY` | API key |
-| `--timeout` | `3600` (env `TIMEOUT`) | Max seconds to wait for the agent run |
-| `--work-dir` | `<output dir>/dbmosaic_work` | Docling text + engine run artifacts |
+| `DOCS_DIR` | required | Directory containing PDFs |
+| `OUTPUT_JSON` | `<docs_dir>/../answer.json` | Merged enriched table output |
+| `--schema` | `<docs_dir>/../schema.json` | Schema with `tables`, `fields`, constraints and descriptions |
+| `--model` | shell `MODEL`, otherwise `gpt-4o` | Model identifier |
+| `--api-base` | shell `API_BASE` | Bootstrap only when `.env` is missing; not the engine's `API_URL` setting |
+| `--api-key` | shell `API_KEY` | Bootstrap key; existing `.env` is untouched |
+| `--timeout` | shell `TIMEOUT`, otherwise `3600` | Shared agent run timeout in seconds |
+| `--work-dir` | `<output dir>/dbmosaic_work` | Converted text and engine artifacts |
+| `--status-output` | `<output stem>_status.json` beside output | Document status JSON |
 
-Environment variables: `API_BASE`, `API_KEY`, `MODEL`, `TIMEOUT` (CLI flags
-take precedence). Credentials are only written to the engine's untracked
-`module/DBMosaic/llm/.env` when that file does not exist yet — an existing
-file is never overwritten, matching the engine's own credential handling (see
-the main README installation section).
+`run_plan_review.py` accepts the same positional paths and forwards extraction
+options when launching extraction. Its additional options are:
 
-### Schema format
+| Option | Meaning |
+|---|---|
+| `--report-only` | Read existing output; do not extract or call an LLM |
+| `--report PATH` | Override `<output stem>_report.json` |
+| `--markdown PATH` | Override the Markdown path (default: JSON report path with `.md` suffix) |
+| `--status-output PATH` | Read/write a custom extraction status file |
 
-The schema is the same JSON used by the other `examples/extract/case*`
-examples and the engine's evaluation harness: a `tables` list where each table
-has `name`, `type`, and `fields` with `type`, `constraints`
-(`primary_key`, `foreign_key`, `nullable`), and a human `description` per
-field. The script converts `fields` → `attributes` internally (the engine's
-input format) and derives the output table order from the schema.
+Extraction options such as `--model` cannot be combined with `--report-only`.
 
----
+## Enrichment and engine artifacts
 
-## How it works inside
+The script converts schema `fields` to engine `attributes`, invokes
+`modules.services.Doc2DBService`, streams agent steps, and loads the best
+snapshot per table (preferring final-stage snapshots). Docling text includes
+the original PDF filename and `===== [Page N] =====` markers; table items are
+exported as Markdown.
 
-The script runs five phases:
+Merged rows have automatic provenance fields outside the target schema:
 
-### 1. Engine & credential setup (`ensure_engine`)
+| Field | Meaning |
+|---|---|
+| `_page_number` | Best matching source page using Docling provenance/evidence |
+| `_raw_text` | Matching Docling items/table rows, or fallback page text |
+| `_source_document` | Source PDF identified from engine evidence |
+| `_confidence` | `0.5 × fill + 0.2 × evidence + 0.3 × integrity` |
+| `warnings` | Engine violations annotated with repair status |
+| `excluded` | Evidence fragments not covered by that row's extracted values |
 
-Verifies the `module/DBMosaic` submodule is checked out, and bootstraps
-`module/DBMosaic/llm/.env` from `--api-base/--api-key` if missing. The engine
-reads its model credentials from that file (via `llm/utils.load_env_config`).
+`fill` is populated schema cells divided by field count; `evidence` is 1 when
+engine evidence exists; `integrity` is `max(0, 1 − 0.2 × unresolved violations)`.
+This is a heuristic, not a calibrated probability. Coverage/excluded analysis
+is per row, so another table may capture text excluded from the current row.
 
-### 2. Document conversion with Docling (`pdfs_to_text`)
+Each `<work-dir>/runs/<run_id>/` contains `snapshots.jsonl`, `violations.jsonl`,
+`fixes.jsonl`, and engine logs. The script replaces the engine's plain
+`result.json` with `{ "run_id": "...", "tables": ... }` containing the same
+enriched tables as `answer.json`.
 
-The engine consumes plain text documents, so each PDF is converted with
-[Docling](https://github.com/docling-project/docling). Docling's document
-model is preserved:
-
-- Page numbers come from each item's **provenance** (`item.prov[].page_no`).
-- Text items contribute their raw text; **tables are exported to Markdown** so
-  the engine's table extraction keeps the row/column structure.
-- Items are grouped per page, and pages are written to
-  `<work-dir>/docs_text/<doc>.txt` with `===== [Page N] =====` markers.
-
-The per-page text and per-item structure are kept in memory (`page_index`,
-`item_index`) for the enrichment phase.
-
-### 3. The agent run (`run_engine`)
-
-Starts an asynchronous job through `modules.services.Doc2DBService` — the same
-service layer the engine's Flask backend and `test_dataset_evaluate.py` use —
-with the converted text files, the converted schema, and the configured model.
-Because the schema is multi-table, an empty `table_name` is passed so **all
-tables** are processed. With multiple tables the engine auto-selects its
-**parallel orchestrator**, which runs per table and per document:
-
-- **Extractor** — entity/relation extraction per table × document
-  (LangChain structured output with Pydantic parsing and automatic output
-  repair; falls back to a Markdown-table prompt).
-- **Verifier (MCP plugins)** — constraint checks: structure, type, value,
-  logic, format, temporal, reference, aggregation, and data quality, plus
-  cross-table (foreign-key) checks.
-- **Fixer** — targeted re-extraction/repair of violating cells
-  (warm-start, cell-level fixes).
-- **Orchestrator** — signal-driven loop that repeats
-  verify→repair until constraints hold, persisting per-stage snapshots to
-  `snapshots.jsonl`, `violations.jsonl`, and `fixes.jsonl` in
-  `<work-dir>/runs/<run_id>/`.
-
-The script streams each agent step to the console and waits for the
-`final_status` message.
-
-### 4. Result loading (`load_final_tables`, `load_violation_stats`)
-
-- Reads `snapshots.jsonl` and selects, per table, the **final-stage
-  snapshot** (post verification + repair); if absent, the most complete
-  earlier-stage snapshot.
-- Each row keeps its engine-internal identity: `tuple_id` and the
-  `evidences` (source documents) attached to each cell's `CellData`.
-- Aggregates `violations.jsonl` / `fixes.jsonl` per `(table, tuple_id)`.
-
-### 5. Enrichment (`enrich_tables`)
-
-Every record is enriched with provenance and quality metadata taken from the
-engine's internal data model (all automatic, **not part of the schema**):
-
-| Field | Meaning | Source |
-|---|---|---|
-| `_page_number` | Page of the source PDF the record is grounded in | Docling item provenance + evidence document, located by scoring pages against the record's values |
-| `_raw_text` | The Docling item(s) containing the record, with tables narrowed to the matching data row(s) | Docling item text / Markdown table export |
-| `_confidence` | 0–1 confidence | `0.5·fill + 0.2·evidence + 0.3·integrity` (see below) |
-| `_source_document` | Source document name | Engine `CellData.evidences` |
-| `warnings` | Specific constraint violations recorded for this entry, with `resolved` flag | `violations.jsonl` + `fixes.jsonl` by `tuple_id` |
-| `excluded` | English text segments from the record's evidence not covered by any extracted value | Character-coverage analysis of `_raw_text` vs. the record's values |
-
-**Page/evidence matching** folds case, whitespace, and punctuation (the
-extractor may normalize `I7- 9750H` to `I7-9750H`, or en dashes to hyphens),
-and weights matches by length so a full line-item description outweighs
-header fields that repeat on every page of an invoice.
-
-**Confidence formula:**
-
-- *fill* — non-empty cells ÷ schema fields for the table
-- *evidence* — 1.0 when the engine attached source documents to the row
-- *integrity* — `1 − 0.2 × unresolved_violations` (violations on the row's
-  `tuple_id` that the fixer did not repair)
-
-**`excluded` semantics:** computed per entry against *that entry's* values
-only — shared evidence (e.g. a seller address block on an invoice page) shows
-up as excluded for the `invoice` record even though it is mapped in the
-`seller` table. This surfaces both text no table captured and
-extraction/evidence mismatches.
-
-### Outputs
-
-```
-<OUTPUT_JSON>                              merged result: {table: [records]}
-<work-dir>/docs_text/                      Docling page-marked text per document
-<work-dir>/runs/<run_id>/snapshots.jsonl   per-stage table snapshots (engine)
-<work-dir>/runs/<run_id>/violations.jsonl  constraint violations (engine)
-<work-dir>/runs/<run_id>/fixes.jsonl       applied repairs (engine)
-<work-dir>/runs/<run_id>/result.json       same enriched records as OUTPUT_JSON,
-                                           wrapped as {run_id, tables}
-<work-dir>/runs/<run_id>/run.log           full engine log
-```
-
-Note: the engine writes its own `result.json` (plain records) when the run
-completes; the script rewrites it with the enriched records afterwards, so the
-run artifact carries the full output.
-
----
-
-## Relationship to the rest of DataMosaic
-
-- The engine invoked here (`module/DBMosaic`) is the same one behind the
-  **Extract** application (`/dbmosaic/`) of the DataMosaic portal — this
-  script is its headless, importable-library entry point (no Flask backend or
-  frontend needed).
-- The output format matches the other extraction examples
-  (`examples/extract/case*/answer.json`), extended with the enrichment
-  fields above.
-- See the [main README](README.md) for the full platform (DocMosaic/Analyze,
-  DBMosaic/Extract, OntoMosaic) and [module/DBMosaic](module/DBMosaic) for
-  the engine's own documentation.
+For platform details, see the [main README](../README.md) and the
+[DBMosaic engine](../module/DBMosaic).

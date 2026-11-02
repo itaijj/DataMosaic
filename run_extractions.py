@@ -67,6 +67,8 @@ Usage:
 
 import argparse
 import json
+import logging
+import warnings
 import os
 import re
 import sys
@@ -141,7 +143,7 @@ def schema_table_order(schema: dict) -> list:
     return [t["name"] for t in schema.get("tables", [])]
 
 
-def pdfs_to_text(docs_dir: Path, work_dir: Path):
+def _pdfs_to_text(docs_dir: Path, work_dir: Path, documents=None, diagnostics=None):
     """Convert the source PDFs to page-marked text files using Docling.
 
     The engine consumes text documents; the Docling document model provides
@@ -159,9 +161,14 @@ def pdfs_to_text(docs_dir: Path, work_dir: Path):
     converter = DocumentConverter()
     work_dir.mkdir(parents=True, exist_ok=True)
     text_files, page_index, item_index = [], {}, {}
-    for pdf in sorted(docs_dir.glob("*.pdf")):
+    for pdf in (documents if documents is not None else sorted(docs_dir.glob("*.pdf"))):
         print(f"   (docling) {pdf.name}")
         result = converter.convert(str(pdf))
+        if diagnostics is not None:
+            for error in getattr(result, "errors", []) or []:
+                diagnostics.append(f"Docling conversion diagnostic: {error}")
+            for warning in getattr(result, "warnings", []) or []:
+                diagnostics.append(f"Docling conversion warning: {warning}")
         doc = result.document
 
         # Group Docling items into pages via their provenance. Text items
@@ -185,7 +192,8 @@ def pdfs_to_text(docs_dir: Path, work_dir: Path):
         pages = ["\n".join(items_by_page.get(n, [])) for n in range(1, len(doc.pages) + 1)]
         out = work_dir / (pdf.stem + ".txt")
         out.write_text(
-            "".join(PAGE_MARKER.format(n=i + 1) + p for i, p in enumerate(pages)),
+            f"Source document filename: {pdf.name}\n"
+            + "".join(PAGE_MARKER.format(n=i + 1) + p for i, p in enumerate(pages)),
             encoding="utf-8",
         )
         text_files.append(str(out))
@@ -194,6 +202,65 @@ def pdfs_to_text(docs_dir: Path, work_dir: Path):
             n: items_by_page.get(n, []) for n in range(1, len(doc.pages) + 1)
         }
     return text_files, page_index, item_index
+
+
+class _ConversionWarningHandler(logging.Handler):
+    """Capture conversion-time logs without suppressing normal console logging."""
+
+    def __init__(self, messages):
+        super().__init__(logging.WARNING)
+        self.messages = messages
+
+    def emit(self, record):
+        self.messages.append(f"Docling [{record.levelname}] {record.name}: {record.getMessage()}")
+
+
+def pdfs_to_text(docs_dir: Path, work_dir: Path, failures=None, document_warnings=None):
+    """Convert independently and attribute conversion diagnostics to each PDF.
+
+    Conversion is sequential, so warnings from Docling and its dependencies
+    during each conversion belong to that PDF. Handlers are always removed.
+    """
+    failures = failures if failures is not None else {}
+    document_warnings = document_warnings if document_warnings is not None else {}
+    text_files, pages, items = [], {}, {}
+    for pdf in sorted(docs_dir.glob("*.pdf")):
+        messages = document_warnings.setdefault(pdf.name, [])
+        handler = _ConversionWarningHandler(messages)
+        root_logger = logging.getLogger()
+        root_logger.addHandler(handler)
+        try:
+            with warnings.catch_warnings(record=True) as captured:
+                warnings.simplefilter("always")
+                try:
+                    files, page_index, item_index = _pdfs_to_text(
+                        docs_dir, work_dir, [pdf], diagnostics=messages)
+                    if not files:
+                        failures[pdf.name] = ["PDF conversion produced no extractable text"]
+                        continue
+                    text_files.extend(files)
+                    pages.update(page_index)
+                    items.update(item_index)
+                finally:
+                    messages.extend(
+                        f"Docling Python warning [{w.category.__name__}]: {w.message} "
+                        f"({w.filename}:{w.lineno})" for w in captured)
+        except Exception as exc:
+            failures[pdf.name] = [f"PDF conversion failed: {type(exc).__name__}: {exc}"]
+        finally:
+            root_logger.removeHandler(handler)
+            handler.close()
+    return text_files, pages, items
+
+
+def write_document_status(path: Path, pdfs: list, failures: dict) -> dict:
+    status = {
+        "documents_processed": sum(pdf.name not in failures for pdf in pdfs),
+        "documents_failed": failures,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return status
 
 
 def run_engine(text_files: list, schema: dict, output_root: Path, model: str,
@@ -556,6 +623,120 @@ def enrich_tables(tables: dict, schema_meta: dict, page_index: dict, violation_s
     return enriched
 
 
+def write_document_answers(answer: dict, pdfs: list, output_dir: Path,
+                           failures: dict = None, document_warnings: dict = None) -> None:
+    """Project the enriched plan-review tables into one JSON per input PDF.
+
+    This is a lossless evidence projection, not another LLM extraction: raw
+    evidence can span multiple comments and excluded fragments are not proof
+    that an item was cleared. Unknown provenance is surfaced in warnings.
+    """
+    failures = failures or {}
+    document_warnings = document_warnings or {}
+    output_dir.mkdir(parents=True, exist_ok=True)
+    documents = {pdf.name: {
+        "document": pdf.name, "jurisdiction": None, "rejections": [],
+        "excluded": [], "warnings": (list(failures.get(pdf.name, []))
+                                      + list(document_warnings.get(pdf.name, []))),
+    } for pdf in pdfs}
+    stems = {pdf.stem: pdf.name for pdf in pdfs}
+
+    def resolve(value):
+        if not isinstance(value, str):
+            return None
+        name = value.replace("\\", "/").rsplit("/", 1)[-1]
+        return name if name in documents else stems.get(Path(name).stem)
+
+    def source(row):
+        return resolve(row.get("_source_document")) or resolve(row.get("document"))
+
+    def warn(doc, message):
+        if message not in documents[doc]["warnings"]:
+            documents[doc]["warnings"].append(message)
+
+    def metadata(doc, row):
+        for warning in row.get("warnings") or []:
+            warn(doc, warning)
+        for fragment in row.get("excluded") or []:
+            item = ({"text": fragment, "reason": "unmapped_evidence"}
+                    if isinstance(fragment, str) else fragment)
+            if item not in documents[doc]["excluded"]:
+                documents[doc]["excluded"].append(item)
+
+    report_docs = {}
+    for row in answer.get("plan_review_report", []):
+        doc = source(row) or resolve(row.get("id"))
+        if not doc:
+            continue
+        if row.get("id"):
+            report_docs[row["id"]] = doc
+        jurisdiction = row.get("jurisdiction")
+        if jurisdiction:
+            previous = documents[doc]["jurisdiction"]
+            if previous and previous != jurisdiction:
+                warn(doc, f"Conflicting jurisdictions: {previous!r} and {jurisdiction!r}")
+            else:
+                documents[doc]["jurisdiction"] = jurisdiction
+        metadata(doc, row)
+
+    rejection_docs = {}
+    parents = {}
+    for row in answer.get("rejection", []):
+        doc = (source(row) or report_docs.get(row.get("report_id"))
+               or resolve(row.get("report_id")))
+        if not doc:
+            for name in documents:
+                warn(name, f"Could not attribute rejection {row.get('rejection_id')!r} to a document")
+            continue
+        item = {
+            "rejection_id": row.get("rejection_id"),
+            "source_item_id": row.get("source_item_id"),
+            "discipline": row.get("discipline"),
+            "raw_text": row.get("_raw_text") or "",
+            "canonical_category": row.get("canonical_category"),
+            "code_references": [],
+            "page": row.get("_page_number"),
+            "source": "text",
+            "confidence": row.get("_confidence"),
+        }
+        documents[doc]["rejections"].append(item)
+        key = row.get("rejection_id")
+        if key:
+            rejection_docs.setdefault(key, set()).add(doc)
+            parents.setdefault((doc, key), []).append(item)
+        metadata(doc, row)
+        if not item["raw_text"]:
+            warn(doc, f"No evidence text located for rejection {key!r}")
+        if item["page"] is None:
+            warn(doc, f"No page located for rejection {key!r}")
+
+    for row in answer.get("code_reference", []):
+        key = row.get("rejection_id")
+        doc = source(row)
+        candidates = rejection_docs.get(key, set())
+        if not doc and len(candidates) == 1:
+            doc = next(iter(candidates))
+        matches = parents.get((doc, key), [])
+        if len(matches) != 1:
+            for name in ([doc] if doc else documents):
+                warn(name, f"Code reference {row.get('id')!r} has missing or ambiguous parent {key!r}")
+            continue
+        citation = row.get("code_reference")
+        if isinstance(citation, str) and citation.strip():
+            if citation not in matches[0]["code_references"]:
+                matches[0]["code_references"].append(citation)
+        else:
+            warn(doc, f"Code reference {row.get('id')!r} is not a nonempty string")
+        metadata(doc, row)
+
+    for pdf in pdfs:
+        document = documents[pdf.name]
+        if document["excluded"]:
+            warn(pdf.name, "Excluded fragments are unmapped evidence, not confirmed cleared comments")
+        path = output_dir / (pdf.stem + ".json")
+        path.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Document-to-database extraction via the DBMosaic agent engine."
@@ -565,6 +746,8 @@ def parse_args() -> argparse.Namespace:
                         help="output JSON path (default: <docs_dir>/../answer.json)")
     parser.add_argument("--schema", type=Path, default=None,
                         help="target database schema JSON (default: <docs_dir>/../schema.json)")
+    parser.add_argument("--status-output", type=Path, default=None,
+                        help="document status JSON (default: <output stem>_status.json)")
     parser.add_argument("--model", default=os.environ.get("MODEL", "gpt-4o"),
                         help="model id (env: MODEL, default: gpt-4o)")
     parser.add_argument("--api-base", default=os.environ.get("API_BASE"),
@@ -609,12 +792,26 @@ def main() -> None:
     print(f"Schema: {schema_file} ({len(table_order)} tables)")
     print(f"Docs  : {len(pdfs)} PDF(s) in {docs_dir}\n")
 
-    text_files, page_index, item_index = pdfs_to_text(docs_dir, work_dir / "docs_text")
+    status_file = args.status_output or output.with_name(output.stem + "_status.json")
+    if status_file.resolve() == output.resolve():
+        sys.exit("Status output must not overwrite extraction output")
+    failures = {}
+    document_warnings = {}
+    text_files, page_index, item_index = pdfs_to_text(
+        docs_dir, work_dir / "docs_text", failures, document_warnings)
     if not text_files:
+        write_document_status(status_file, pdfs, failures)
         sys.exit("No extractable text in any PDF")
 
-    run_dir = run_engine(text_files, schema, work_dir / "runs", args.model, args.timeout)
-    tables = load_final_tables(run_dir)
+    try:
+        run_dir = run_engine(text_files, schema, work_dir / "runs", args.model, args.timeout)
+        tables = load_final_tables(run_dir)
+    except (Exception, SystemExit) as exc:
+        for pdf in pdfs:
+            if pdf.name not in failures:
+                failures[pdf.name] = [f"Shared extraction run failed: {exc}"]
+        write_document_status(status_file, pdfs, failures)
+        raise
     violation_stats, violation_details = load_violation_stats(run_dir)
     enriched = enrich_tables(tables, schema_meta, page_index, violation_stats, item_index, violation_details)
 
@@ -635,11 +832,17 @@ def main() -> None:
         encoding="utf-8",
     )
 
+    docs_answer = output.parent / "docs_answer"
+    write_document_answers(merged, pdfs, docs_answer, failures, document_warnings)
+    status = write_document_status(status_file, pdfs, failures)
+    print(f"Per-document answers: {docs_answer}")
+    print(f"Document status: {status_file}")
     print(f"\nWrote {output} (enriched result also in {result_file}; run artifacts in {run_dir})")
     for t, rows in merged.items():
         located = sum(1 for r in rows if r.get("_page_number"))
         avg_conf = round(sum(r.get("_confidence") or 0 for r in rows) / len(rows), 3) if rows else 0
         print(f"  {t:20s} {len(rows)} record(s), {located} page-located, avg confidence {avg_conf}")
+    return status
 
 
 if __name__ == "__main__":
