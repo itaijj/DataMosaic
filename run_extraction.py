@@ -18,7 +18,8 @@ excluded).
 Usage:
   python3 run_extraction.py DOC.pdf [--schema SCHEMA.json] [--output OUT.json]
                                    [--model MODEL] [--api-base URL] [--api-key KEY]
-                                   [--timeout SECONDS] [--work-dir DIR]
+                                   [--timeout SECONDS] [--work-dir DIR] [--langsmith]
+                                   [--langsmith-project NAME]
 
   SCHEMA defaults to schema.json next to DOC.pdf's parent directory (i.e.
   <docs_dir>/../schema.json, matching run_extractions.py's convention);
@@ -63,6 +64,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=int,
                         default=int(rx.os.environ.get("TIMEOUT", "3600")),
                         help="max seconds to wait for the agent run (env: TIMEOUT)")
+    parser.add_argument("--langsmith", action="store_true",
+                        default=rx.os.environ.get("LANGSMITH_TRACING", "").lower() in ("1", "true"),
+                        help="send LangSmith tracing for the agent run: LLM calls with "
+                             "token usage and latency, agent steps as tool runs, and a "
+                             "root run per extraction (env: LANGSMITH_TRACING; requires "
+                             "LANGSMITH_API_KEY)")
+    parser.add_argument("--langsmith-project", default=rx.os.environ.get("LANGSMITH_PROJECT"),
+                        help="LangSmith project name (env: LANGSMITH_PROJECT, "
+                             "default: datamosaic-extraction)")
     parser.add_argument("--work-dir", type=Path, default=None,
                         help="work directory for Docling text and engine artifacts "
                              "(default: <output dir>/dbmosaic_work)")
@@ -105,13 +115,24 @@ def main() -> None:
     page_index = {doc.stem: page_index[doc.stem]}
     item_index = {doc.stem: item_index[doc.stem]}
 
+    tracer = rx.make_tracer(
+        args.langsmith, args.langsmith_project,
+        f"extraction: {doc.name}",
+        {"model": args.model,
+         "schema": [t.get("name") for t in raw_schema.get("tables", [])],
+         "documents": [doc.name]},
+    )
+    if tracer is not None:
+        print(f"LangSmith tracing enabled (project: {rx.tracer_project(tracer)})\n")
+
     try:
         run_dir = rx.run_engine(text_files, schema, work_dir / "runs",
-                                args.model, args.timeout)
+                                args.model, args.timeout, tracer=tracer)
         tables = rx.load_final_tables(run_dir)
     except SystemExit:
         raise
     except Exception as exc:
+        rx.tracer_finish(tracer, outputs=None, error=f"extraction run failed: {exc}")
         sys.exit(f"Extraction run failed: {exc}")
     violation_stats, violation_details = rx.load_violation_stats(run_dir)
     enriched = rx.enrich_tables(tables, schema_meta, page_index,

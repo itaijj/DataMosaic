@@ -4,3 +4,5 @@
 docling>=2.0,<3
 openai>=1.0.0
 requests>=2.31,<3
+# LangSmith for the optional --langsmith tracing of the extraction runners.
+langsmith>=0.14,<1

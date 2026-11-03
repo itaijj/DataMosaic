@@ -57,7 +57,8 @@ Prerequisites:
 Usage:
   python3 run_extractions.py DOCS_DIR [OUTPUT_JSON] [--schema SCHEMA.json]
                                [--model MODEL] [--api-base URL] [--api-key KEY]
-                               [--timeout SECONDS] [--work-dir DIR]
+                               [--timeout SECONDS] [--work-dir DIR] [--langsmith]
+                               [--langsmith-project NAME]
 
   DOCS_DIR is the directory of source documents; SCHEMA defaults to
   schema.json next to DOCS_DIR; OUTPUT_JSON defaults to answer.json next to
@@ -72,6 +73,7 @@ import warnings
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -263,24 +265,140 @@ def write_document_status(path: Path, pdfs: list, failures: dict) -> dict:
     return status
 
 
+def make_tracer(enabled: bool, project: str, run_name: str, inputs: dict):
+    """Create a LangSmith root run for the agent run, or return None.
+
+    Tracing is enabled explicitly (--langsmith flag or LANGSMITH_TRACING)
+    and requires LANGSMITH_API_KEY. Requires the langsmith package in the
+    engine venv (already part of its requirements via langchain).
+    """
+    if not enabled:
+        return None
+    if not os.environ.get("LANGSMITH_API_KEY"):
+        sys.exit("--langsmith requires LANGSMITH_API_KEY (and optionally "
+                 "LANGSMITH_PROJECT / LANGSMITH_ENDPOINT) to be set")
+    try:
+        from langsmith.run_trees import RunTree
+    except ImportError:
+        sys.exit("langsmith is not installed in the engine venv; install it "
+                 "with: module/DBMosaic/.venv/bin/python -m pip install langsmith")
+    os.environ.setdefault("LANGSMITH_TRACING", "true")
+    root = RunTree(
+        name=run_name,
+        run_type="chain",
+        inputs=inputs,
+        project_name=project or os.environ.get("LANGSMITH_PROJECT", "datamosaic-extraction"),
+        tags=["dbmosaic"],
+    )
+    root.post()
+    return root
+
+
+def tracer_project(tracer) -> str:
+    """Project name of the tracer's root run."""
+    if tracer is None:
+        return ""
+    try:
+        if getattr(tracer, "project_name", None):
+            return tracer.project_name
+        if callable(getattr(tracer, "get", None)) and tracer.get("project_name"):
+            return tracer.get("project_name")
+    except Exception:
+        pass
+    return os.environ.get("LANGSMITH_PROJECT", "datamosaic-extraction")
+
+
+def tracer_child(tracer, name: str, run_type: str, inputs: dict):
+    """Start a child run on the tracer's root (no-op when tracing is off)."""
+    if tracer is None:
+        return None
+    child = tracer.create_child(name=name, run_type=run_type, inputs=inputs)
+    child.post()
+    return child
+
+
+def tracer_finish(run, outputs: dict = None, error: str = None) -> None:
+    """End a run started by make_tracer/tracer_child (no-op when None)."""
+    if run is None:
+        return
+    run.end(outputs=outputs, error=error)
+    run.patch()
+
+
+def _install_llm_patch(gpt, configured_model: str, tracer) -> None:
+    """Wrap the engine's direct LLM client.
+
+    Keeps the configured model on every call (the client falls back to
+    'gpt-4o' for unknown ids) and, when tracing is on, records each call as
+    a LangSmith 'llm' run with token usage (captured from the HTTP response
+    via a one-time requests.post wrapper), output and latency.
+    """
+    if getattr(gpt, "_model_patched", False):
+        return
+    _orig_get_answer = gpt.get_answer
+    _usage_store = threading.local()
+
+    import requests
+    if not getattr(requests, "_usage_patched", False):
+        _orig_post = requests.post
+
+        def _usage_post(url, *args, **kwargs):
+            resp = _orig_post(url, *args, **kwargs)
+            try:
+                usage = (resp.json() or {}).get("usage")
+                if usage and "chat/completions" in str(url):
+                    if not hasattr(_usage_store, "usages"):
+                        _usage_store.usages = []
+                    _usage_store.usages.append(usage)
+            except Exception:
+                pass
+            return resp
+
+        requests.post = _usage_post
+        requests._usage_patched = True
+
+    def _model_get_answer(text, image=None, system_prompt=None, history=None, model=None):
+        started = time.time()
+        if not hasattr(_usage_store, "usages"):
+            _usage_store.usages = []
+        base = len(_usage_store.usages)
+        output = _orig_get_answer(text, image=image, system_prompt=system_prompt,
+                                  history=history, model=configured_model)
+        latency = round(time.time() - started, 3)
+        if tracer is not None:
+            usage = _usage_store.usages[base:]
+            totals = {}
+            for u in usage:
+                for k in ("prompt_tokens", "completion_tokens", "total_tokens",
+                          "prompt_tokens_details", "completion_tokens_details"):
+                    if isinstance(u.get(k), int):
+                        totals[k] = totals.get(k, 0) + u[k]
+            run = tracer_child(tracer, f"llm: {configured_model}", "llm", {
+                "model": configured_model,
+                "prompt": text,
+                "system_prompt": system_prompt,
+            })
+            tracer_finish(run, outputs={
+                "output": output,
+                "usage": totals or None,
+                "latency_seconds": latency,
+            })
+        return output
+
+    gpt.get_answer = _model_get_answer
+    gpt._model_patched = True
+
+
 def run_engine(text_files: list, schema: dict, output_root: Path, model: str,
-               run_timeout: int) -> Path:
+               run_timeout: int, tracer=None) -> Path:
     """Run the DBMosaic extraction -> verification -> repair agent loop."""
     sys.path.insert(0, str(ENGINE_DIR))
 
-    # The engine's direct-LLM client falls back to 'gpt-4o' for unknown model
-    # ids; wrap it so direct calls keep using the configured model.
+    # Wrap the engine's direct-LLM client: keep the configured model on every
+    # call and, when tracing is enabled, record each call to LangSmith.
     import llm.gpt as gpt
 
-    configured_model = model
-    if getattr(gpt, "_model_patched", False) is False:
-        _orig_get_answer = gpt.get_answer
-
-        def _model_get_answer(text, image=None, system_prompt=None, history=None, model=None):
-            return _orig_get_answer(text, image=image, system_prompt=system_prompt, history=history, model=configured_model)
-
-        gpt.get_answer = _model_get_answer
-        gpt._model_patched = True
+    _install_llm_patch(gpt, model, tracer)
     from modules.services import Doc2DBService
 
     service = Doc2DBService(output_dir=str(output_root))
@@ -310,17 +428,34 @@ def run_engine(text_files: list, schema: dict, output_root: Path, model: str,
 
         msg_type = msg.get("type")
         if msg_type == "step_completed":
-            print(f"  [step] {msg.get('description') or msg.get('step')}")
+            description = msg.get("description") or msg.get("step")
+            print(f"  [step] {description}")
+            # Agent steps (extraction/verification/fixing per table, tool
+            # invocations, cross-table checks) become LangSmith 'tool' runs.
+            step_run = tracer_child(tracer, f"step: {description}", "tool",
+                                    {"description": description})
+            tracer_finish(step_run, outputs={"status": "completed"})
         elif msg_type == "final_status":
             final = msg
             break
         elif msg_type == "error":
+            if tracer is not None:
+                tracer_finish(tracer, outputs=None, error=str(msg.get("error")))
             sys.exit(f"Agent run failed: {msg.get('error')}")
 
     if final is None:
+        if tracer is not None:
+            tracer_finish(tracer, outputs=None,
+                          error=f"agent run did not finish within {run_timeout}s")
         sys.exit(f"Agent run did not finish within {run_timeout}s")
 
     status = final.get("status")
+    if tracer is not None:
+        tracer_finish(tracer, outputs={
+            "status": status,
+            "documents": [Path(f).name for f in text_files],
+            "tables": list(schema.get("tables", []) and [t.get("name") for t in schema["tables"]]),
+        })
     if status != "completed":
         sys.exit(f"Agent run ended with status: {status}")
     return output_root / run_id
@@ -756,6 +891,15 @@ def parse_args() -> argparse.Namespace:
                         help="API key (env: API_KEY)")
     parser.add_argument("--timeout", type=int, default=int(os.environ.get("TIMEOUT", "3600")),
                         help="max seconds to wait for the agent run (env: TIMEOUT, default: 3600)")
+    parser.add_argument("--langsmith", action="store_true",
+                        default=os.environ.get("LANGSMITH_TRACING", "").lower() in ("1", "true"),
+                        help="send LangSmith tracing for the agent run: LLM calls with "
+                             "token usage and latency, agent steps as tool runs, and a "
+                             "root run per extraction (env: LANGSMITH_TRACING; requires "
+                             "LANGSMITH_API_KEY)")
+    parser.add_argument("--langsmith-project", default=os.environ.get("LANGSMITH_PROJECT"),
+                        help="LangSmith project name (env: LANGSMITH_PROJECT, "
+                             "default: datamosaic-extraction)")
     parser.add_argument("--work-dir", type=Path, default=None,
                         help="work directory for Docling text and engine run artifacts "
                              "(default: <output dir>/dbmosaic_work)")
@@ -803,10 +947,21 @@ def main() -> None:
         write_document_status(status_file, pdfs, failures)
         sys.exit("No extractable text in any PDF")
 
+    tracer = make_tracer(
+        args.langsmith, args.langsmith_project,
+        f"extraction: {len(text_files)} document(s)",
+        {"model": args.model,
+         "schema": [t.get("name") for t in raw_schema.get("tables", [])],
+         "documents": [Path(f).name for f in text_files]},
+    )
+    if tracer is not None:
+        print(f"LangSmith tracing enabled (project: {tracer_project(tracer)})\n")
     try:
-        run_dir = run_engine(text_files, schema, work_dir / "runs", args.model, args.timeout)
+        run_dir = run_engine(text_files, schema, work_dir / "runs", args.model, args.timeout,
+                             tracer=tracer)
         tables = load_final_tables(run_dir)
     except (Exception, SystemExit) as exc:
+        tracer_finish(tracer, outputs=None, error=f"extraction run failed: {exc}")
         for pdf in pdfs:
             if pdf.name not in failures:
                 failures[pdf.name] = [f"Shared extraction run failed: {exc}"]

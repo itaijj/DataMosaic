@@ -97,6 +97,28 @@ An existing `.env` is **never overwritten**, so these flags do not override
 its credentials. Editing the file directly as above is the recommended setup
 and avoids putting the key in shell history.
 
+### Model support is endpoint-based, not vendor-based
+
+The pipeline is **model-agnostic**: it is not tied to OpenAI models, but it
+speaks only the **OpenAI chat-completions API format**. Any model reachable
+through an OpenAI-compatible endpoint can be used by setting `API_URL` to
+that endpoint and passing the model id with `--model`:
+
+- The runners wrap the engine's LLM client so the configured `--model` id is
+  used on every call, bypassing the engine's built-in allow-list fallback to
+  `gpt-4o` for unknown ids. Non-OpenAI model ids therefore work as-is.
+- **Claude and Gemini are supported through an OpenAI-compatible gateway
+  (e.g. LiteLLM) only.** Their native vendor APIs (Anthropic Messages API,
+Google Generative Language API) are *not* supported, because both the
+engine's direct HTTP client and its LangChain `ChatOpenAI` calls use the
+OpenAI wire format. Point `API_URL` at a gateway that serves `claude-*` or
+`gemini-*` models in that format.
+- LangSmith token-usage tracing also reads the standard OpenAI `usage`
+block, so it works for any provider whose compatibility layer returns it.
+- Only plain chat-completions semantics are used; provider-specific features
+(such as Anthropic thinking parameters or Gemini-native tool schemas) are
+not exposed.
+
 ## 3. Put PDFs in the plan-review input directory
 
 ```text
@@ -363,6 +385,36 @@ Without `--report-only`, this wrapper launches `run_extractions.py` first.
 If extraction fails with a status file, it writes a failure report without
 summarizing a stale answer, then exits nonzero.
 
+## LangSmith tracing
+
+Both extraction runners can send observability data to **LangSmith** with a
+configurable flag, without any engine changes:
+
+```bash
+export LANGSMITH_API_KEY=...            # required when tracing is on
+module/DBMosaic/.venv/bin/python run_extractions.py \
+  examples/extract/plan_review/docs --model gpt-4o --langsmith
+```
+
+- `--langsmith` enables tracing (or set `LANGSMITH_TRACING=true`);
+`--langsmith-project NAME` selects the project (env `LANGSMITH_PROJECT`,
+default `datamosaic-extraction`). `LANGSMITH_ENDPOINT` selects a custom or
+self-hosted LangSmith API.
+- Each extraction becomes a root **chain** run; every agent step streamed by
+the engine (per-table extraction, verification, fixing, cross-table checks)
+becomes a **tool** run; every direct engine LLM call becomes an **llm** run
+with prompt, output, **token usage** (captured from the API response) and
+**latency**. Latency is also derived per run from start/end timestamps.
+- Because the flag also sets `LANGSMITH_TRACING=true`, LLM calls the engine
+makes through LangChain are traced natively as well.
+- Tracing requires the `langsmith` package in the engine venv (already
+installed with its requirements); without `LANGSMITH_API_KEY` the flag exits
+with an error before any document is processed.
+
+`scripts/mock_langsmith.py PORT` runs a minimal local LangSmith-compatible
+endpoint that prints received runs, for verifying tracing offline (point
+`LANGSMITH_ENDPOINT` at it, e.g. `http://127.0.0.1:8455`).
+
 ## CLI reference
 
 ```text
@@ -370,11 +422,13 @@ run_extractions.py DOCS_DIR [OUTPUT_JSON]
   [--schema SCHEMA.json] [--model MODEL]
   [--api-base URL] [--api-key KEY]
   [--timeout SECONDS] [--work-dir DIR] [--status-output PATH]
+                       [--langsmith] [--langsmith-project NAME]
 
 run_extraction.py DOC.pdf
   [--schema SCHEMA.json] [--output OUT.json]
   [--model MODEL] [--api-base URL] [--api-key KEY]
-  [--timeout SECONDS] [--work-dir DIR]
+  [--timeout SECONDS] [--work-dir DIR] [--langsmith]
+  [--langsmith-project NAME]
 
 add_to_results.py ENTRY.json [--results RESULTS.json] [--replace]
 ```
@@ -389,6 +443,8 @@ add_to_results.py ENTRY.json [--results RESULTS.json] [--replace]
 | `--model` | shell `MODEL`, otherwise `gpt-4o` | Model identifier |
 | `--api-base` / `--api-key` | shell `API_BASE` / `API_KEY` | Bootstrap only when `.env` is missing; not the engine's `API_URL` setting |
 | `--timeout` | shell `TIMEOUT`, otherwise `3600` | Agent run timeout in seconds |
+| `--langsmith` | shell `LANGSMITH_TRACING` | Send LangSmith tracing (needs `LANGSMITH_API_KEY`) |
+| `--langsmith-project` | shell `LANGSMITH_PROJECT` | LangSmith project name |
 | `--work-dir` | `<output dir>/dbmosaic_work` | Converted text and engine artifacts |
 
 `add_to_results.py` arguments:
