@@ -498,3 +498,39 @@ enriched tables as `answer.json`.
 
 For platform details, see the [platform README](docs/datamosaic.md) and the
 [DBMosaic engine](module/DBMosaic).
+
+## Limitations
+
+- **Document conversion (Docling):** complex tables (merged cells, nested
+  headers, multi-column layouts), plots/charts, and image-only content are
+  lossy or dropped during PDF-to-text conversion. Multi-page entities, where
+  a single logical record spans several pages, are also not stitched together
+  reliably by the converter.
+- **Non-standard field values:** fields whose valid values follow rules that
+  cannot be described declaratively in the schema (no regex, enum, or
+  business constraint that captures them) cannot be verified or repaired by
+  the engine, so such values are only as good as the extraction LLM.
+- **Shared engine failures** are attributed to every submitted document
+  (see the document status section), and conversion warnings are captured
+  only during the current run.
+
+## Cost and latency
+
+Cost and latency depend on the LLM provider, model, and document size/complexity.
+As a rough guide, processing a document typically costs **a few cents** and
+takes **around ten seconds**, assuming the Docling PDF conversion runs on a
+fast GPU or the input is already plain text. Larger documents, more schema
+tables, or more verification/repair rounds increase both. Use
+`--langsmith` tracing to measure the actual token usage and per-call latency
+of a run.
+
+## Future work
+
+- **Automatic schema discovery and refinement** over large document
+  collections: infer candidate tables, fields, and constraints from many
+  documents instead of requiring a fully specified schema up front, and
+  refine the schema as more documents are processed.
+- **Reducing false-positive/hallucinated entities while keeping a high
+  discovery rate** (not missing real entities): tighten evidence grounding
+  and verification so that invented records are rejected without dropping
+  genuine ones.
