@@ -1,157 +1,444 @@
-# DataMosaic
+# PDF extraction and plan-review reports
 
-[![Python](https://img.shields.io/badge/Python-%E2%89%A53.11-3776AB.svg)](https://www.python.org/)
-[![Interface](https://img.shields.io/badge/Interface-React%20%2B%20FastAPI%20%2B%20Flask-0F766E.svg)](./web/)
-
-<p align="center">
-  <img src="assets/system.png" alt="Overview of DataMosaic system." width="100%" />
-</p>
-
-
-**A task-driven Document AI system for turning information from complex data sources into answers and structured data.**
-
-Given a task **Q** and available sources, DataMosaic is built around three complementary capabilities:
-
-- **Agentic workflow orchestration:** decompose Q, choose the next operation, and refine the workflow as new evidence appears.
-- **Extraction from raw data:** locate and interpret information in source documents, including text, tables, and visual content.
-- **Inference from model memory (LLM inference):** synthesize, compare, or reason when the answer is not a literal field in the source. Model-only inferences should be distinguished from claims grounded in the input.
-
-These capabilities are organized into task-oriented modules:
-
-The homepage uses a top navigation bar: **Applications → DBMosaic / DocMosaic** opens DBMosaic and DocPilot respectively; **Ontologies** lists the OntoMosaic modules; **Resources → Tools / Benchmarks / Publications** opens `/tools/`, `/benchmarks/`, and the existing `/research/` publication list. **Organization → Documentation / Members** opens the repository and `/members/`; Members lists faculty and students with portraits and available profile links; Tools groups related products into Agentic Document AI (LandingAI) and Extraction (LlamaExtract and Reducto), with product images, capability summaries, and official website links; Benchmarks groups DTBench and Doc2DB-Bench under Information Extraction, and LongDocURL, MMLongBench-Doc, MADQA, FinRAGBench-V, and OfficeQA Pro under DocVQA, with official figures and paper, code, and dataset links, and **Contact us** opens the repository's issue form. On smaller screens, navigation is available through the menu button. The research page groups the publications by year and provides PDF and code links where they are available; it supports direct access and refresh through the existing portal fallback.
-
-| Engine / Module | Repository | What it does | Output |
-| --- | --- | --- | --- |
-| **DocMosaic** (`/docmosaic/`) | [DocPilot](https://github.com/HKUSTDial/DocPilot) | Investigates questions across long visual documents and follows evidence across pages | An answer with agent steps and navigable source evidence |
-| **DBMosaic** (`/dbmosaic/`) | [DBMosaic](https://github.com/HKUSTDial/DBMosaic) | Collects entities, fields, and relationships from documents under a target structure | Structured records and a database to inspect or export |
-
-## Related Work
-
-This work is associated with three publications:
-
-[1] **Zhengxuan Zhang**, Zhuowen Liang, Jiazhuo Chen, Haixun Wang, and Nan Tang. *Document-to-Database: Extraction Meets Relational Semantics.* VLDB, 2026. [[PDF](https://www.vldb.org/pvldb/vol19/p2522-tang.pdf)]
-
-[2] **Zhengxuan Zhang**, Zhuowen Liang, Haixun Wang, and Nan Tang. *DataMosaic: An Interactive Demonstration of Constraint-Driven Document-to-Database Construction.* VLDB Demo, 2026. [[PDF](https://www.vldb.org/pvldb/vol19/p4570-zhang.pdf)]
-
-[3] **Zhuowen Liang**, Xiaotian Lin, Yuyu Luo, Haixun Wang, and Nan Tang. *DocPILOT: Interactive Agent Orchestration and Training for Long Visual Document Understanding.* arXiv, 2026. [[PDF](https://arxiv.org/pdf/2610.21327)]
-
-## Website preview on GitHub Pages
-
-The portal can be published as a static preview at **https://hkustdial.github.io/DataMosaic/**. **Actions → Build website branch → Run workflow** builds the portal and updates the `gh-pages` branch. In **Settings → Pages → Build and deployment**, select **Deploy from a branch**, branch **gh-pages**, folder **/ (root)**, and save. GitHub then publishes that branch through its separate **pages build and deployment** workflow.
-
-Later pushes affecting the website rebuild `gh-pages` and explicitly request a Pages build, since pushes made with `GITHUB_TOKEN` do not trigger one automatically. No extra personal access token is needed. A successful **Build website branch** run confirms that the generated branch was updated; check **pages build and deployment** and the public URL to confirm publication. Branch publishing still uses GitHub Pages and can encounter service-side delays or timeouts.
-
-The preview includes the homepage, animations, research page, the DBMosaic product page, module demos, and empty ontology placeholders. The DBMosaic card opens that product page. DocMosaic and OntoMosaic-DB links open demos. Document analysis, database extraction, and ontology training require the local deployment below. The workflow builds only the portal and needs neither engine submodules nor model credentials. The generated branch contains the build output and `.nojekyll`, with no application source or engine submodules.
-
-To build and inspect the same preview locally:
-
-```bash
-cd web
-npm ci
-npm run build -- --mode pages --base=/DataMosaic/
-node scripts/prepare-pages.mjs
-npm run preview
-```
-
-Open the printed preview address with `/DataMosaic/` appended. Use the ordinary `npm run build` or `start.sh` for the full application deployment.
-
-## Installation
-
-Clone DataMosaic with its engine submodules:
-
-```bash
-git clone --recurse-submodules https://github.com/HKUSTDial/DataMosaic.git
-cd DataMosaic
-cp module/DBMosaic/llm/.env.example module/DBMosaic/llm/.env
-```
-
-Both engine submodules use public HTTPS repository URLs. If you cloned without submodules, run `git submodule update --init --recursive`. Set your DBMosaic model credentials in the untracked `module/DBMosaic/llm/.env`; configure DocPilot's model in its web **Model Settings**. Do not commit credentials.
-
-Choose a runtime:
-
-- **Docker:** Install Docker Engine and Compose. The containers build the engine and frontend dependencies; no host Python or Node.js environment is needed.
-- **Local script:** Install Python 3.11, Node.js 20.19+ (or 22.12+) with npm, `rsync`, and `curl`. Set up `module/DocPilot/.venv` and `module/DBMosaic/.venv`, and install both engines' frontend dependencies. Follow the [DocPilot installation and interactive demo guide](module/DocPilot/README.md) and [DBMosaic quick start](module/DBMosaic/README.md) for the engine-specific steps. The script expects these environments and `node_modules` directories to exist; it does not install them.
-
-For deployment details, including MinerU model preparation, see [deploy.md](deploy.md).
-
-## Quick start
-
-### Docker
-
-Create the root deployment configuration, then start the stack:
-
-```bash
-cp .env.example .env
-docker compose config --quiet
-docker compose up --build -d
-docker compose ps
-```
-
-The root `.env` controls deployment settings such as the web bind address. The first build downloads dependencies and may take time. Only the web entry point is published to the host by default.
-
-### Local script
-
-After installing the two engines as described above, install the portal frontend and start all local services:
-
-```bash
-npm --prefix web ci
-./start.sh
-```
-
-The script builds the three frontends and starts both engines and the portal. Keep the terminal open; press `Ctrl+C` to stop the services. It uses local ports `8001`, `8008`, `5000`, `8765`, and `8080`, so stop a running Docker stack before using the script.
-
-With either method, open **http://127.0.0.1:8080** and choose the module for your task.
-
-## Analyze: agentic intelligence for long visual documents
-
-**Analyze** handles questions whose answers are scattered across pages or encoded in tables, charts, figures, and document layout. Powered by DocPilot, a state-aware agent navigates the document, retrieves text and visual evidence, inspects relevant regions, performs computation when needed, and checks whether the answer is grounded. If the evidence is incomplete, it can continue the search instead of forcing a one-shot response.
-
-Pair the workflow with a strong multimodal LLM for high-quality document analysis. DocPilot also supports compact models trained on individual document-solving abilities and complete interaction trajectories; trained action-tag models can be served through vLLM for a smaller, self-hosted deployment.
-
-1. Open **Analyze** from the home page. In **Model Settings**, choose **Custom** for a multimodal LLM or **vLLM** for a trained DocPilot action-tag model, then enter the endpoint, model, and any required key.
-2. Keep **Default** selected for the agentic workflow. Import a PDF into **Workspace**, wait until MinerU marks it **Ready**, then add it to the conversation.
-3. Ask your question. Follow the agent steps as the answer is produced, and click an evidence reference to locate it in the PDF viewer.
-
-For a direct multimodal question without the DocPilot pipeline, switch to the **Chat** agent and attach a PDF or image in the composer. Default-agent PDF preprocessing requires MinerU models; see the [DocPilot setup guide](module/DocPilot/README.md) and [deployment notes](deploy.md) before the first real run.
-
-## Extract: constraint-aware document-to-database/table
-
-**Extract** turns collections of raw documents into structured, relational data. Powered by DBMosaic, it uses a natural-language objective or an explicit schema to identify entities, attributes, and relationships, then runs an orchestrated **extraction → verification → repair** loop. Schema rules, foreign keys, and business constraints guide targeted corrections, so the result is more than a list of isolated fields.
-
-Use it when you need a reusable database—for example, consolidating companies, reporting periods, revenue, and income across financial reports—and correctness depends on relationships across records as well as individual values.
-
-The same engine can be run headless from the command line on a directory of documents plus a schema: see [`run_extractions.py`](run_extractions.py) and [docs/run_extractions.md](docs/run_extractions.md) (worked example: `examples/extract/invoice/`).
-
-1. Open **Extract** from the home page. Upload source files to the file library and select the ones to process.
-2. Under **Processing Method**, choose **Description** to specify the desired information in natural language, or **Schema** to define tables, fields, and relationships.
-3. Click **Begin Analysis**, follow the extraction and verification stages, then inspect the generated records and database. Export the result from the DBMosaic workspace if needed.
-
-The button is enabled only when at least one file is selected and the description or schema is valid. Configure DBMosaic's model credentials before running a task; see its [README](module/DBMosaic/README.md) for supported formats and schema details.
-
-## Project layout
+`run_extractions.py` runs the **DBMosaic agent engine** in `module/DBMosaic`
+for a whole directory of PDFs, `run_extraction.py` for a single PDF, and
+`add_to_results.py` merges single-document results into one cumulative file:
 
 ```text
-DataMosaic/
-├── web/                 # Unified entry page and reverse proxy
-├── api/                 # Platform API
-├── module/
-│   ├── DocPilot/        # Analyze engine (Git submodule)
-│   └── DBMosaic/      # Extract engine (Git submodule)
-├── docker-compose.yml  # Web, API, and both engines
+PDFs → Docling text → extraction → verification → repair → enriched JSON
+                                                        → per-document JSON
+                                                        → document status JSON
 ```
 
-The engines are pinned Git submodules under `module/`; their source code is maintained in their upstream repositories.
+Run commands below from the repository root. The `.venv/bin/python` paths are
+for Linux/WSL, matching the configuration used here.
 
-Analyze and Extract currently retain separate uploaded files, histories, and results; switching between them does not transfer data automatically. Docker stores their runtime data in named volumes, including DocPilot's workspace, runs, and MinerU models, and DBMosaic's uploads, history, and outputs. `docker compose down` keeps those volumes; **do not use `docker compose down -v` if you want to keep your data**. For local development without Docker, see [deploy.md](deploy.md).
+## 1. Install all Python dependencies together
 
-The default web bind address is `127.0.0.1:8080`. For access from another machine on a trusted network, set `DATAMOSAIC_WEB_BIND=0.0.0.0` in `.env` and protect the service with a firewall or authentication proxy. This entry point has no built-in user authentication and must not be exposed directly to the public Internet.
+Use **Python 3.10 or newer**. The repository-root `pyproject.toml` (Python's
+standard filename, not `pyproject.yaml`) combines:
 
-Naming: the platform uses `DATAMOSAIC_*` environment variables, the DBMosaic Extract engine uses `DBMOSAIC_*`, and DocPilot keeps `DOCPILOT_*`. Update any external shell exports or service configuration to these names. The `datamosaic` Compose service, Docker volume names, browser theme storage keys, and DataMosaic publication title are retained.
+- All dependencies in `module/DBMosaic/requirements.txt`.
+- `requirements-extraction.txt`: **Docling, OpenAI and requests** for extraction.
+- An optional `api` extra for the root DataMosaic FastAPI service.
 
-## OntoMosaic-DB
+From the repository root, initialize the submodule **before** installation:
 
-Open **`/ontomosaic-db`** to import a SQLite database and question–SQL examples, build ontology knowledge with Cortex, and explore or export the resulting graph. The backend is maintained in [`module/Ontology-NL2SQL`](https://github.com/HKUSTDial/Ontology-NL2SQL), independently of the document engines.
+```bash
+git submodule update --init module/DBMosaic
+python3 -m venv module/DBMosaic/.venv
+module/DBMosaic/.venv/bin/python -m pip install --upgrade pip
+module/DBMosaic/.venv/bin/python -m pip install -e .
+```
 
-After installing the engine web dependencies, use `./start.sh --ontology-only` for independent development, or the full local/Docker stack for all modules. See [the integration guide](docs/ontomosaic-text2sql.md) for configuration, API paths, storage, current limits, and verification.
+This replaces the separate requirements, Docling and OpenAI install commands.
+If the virtual environment already exists, skip creating it and run the last
+two commands with its interpreter. No activation is required.
 
-Module entry paths are `/docmosaic/` and `/dbmosaic/`. Legacy `/analyze/` and `/extract/` pages redirect to them; legacy API and WebSocket paths remain compatible. Rebuild and restart the web gateway after changing paths.
+To also install the root API service's Python dependencies, use this instead
+of the final command:
+
+```bash
+module/DBMosaic/.venv/bin/python -m pip install -e '.[api]'
+```
+
+Verify the installation using the **same interpreter** that will run extraction:
+
+```bash
+module/DBMosaic/.venv/bin/python -m pip check
+module/DBMosaic/.venv/bin/python -c "import docling, openai, requests, dotenv; print('Extraction dependencies available')"
+```
+
+This project installs a **local Python environment**, not a standalone copy of
+DBMosaic. Keep the initialized checkout and run the scripts from the repository
+root. It does not install the web frontend's Node dependencies, start services,
+or configure credentials; see the [platform README](docs/datamosaic.md) for full-platform
+setup. Docling may download model assets on its first conversion, so initial
+PDF processing can require network access and additional time/disk space.
+
+The dependencies are version ranges, not a reproducible lockfile. DBMosaic's
+requirements remain the source of truth for its dependencies; rerun the install
+command after changing them or updating the submodule.
+
+## 2. Configure OpenAI
+
+Create or edit **`module/DBMosaic/llm/.env`** (Windows path:
+`module\DBMosaic\llm\.env`). Configure the engine with these exact names:
+
+```dotenv
+API_URL=https://api.openai.com/v1/chat/completions
+API_KEY=YOUR_OPENAI_API_KEY
+LLM_REQUEST_TIMEOUT=300
+LLM_MAX_RETRIES=3
+LLM_RETRY_DELAY=3
+```
+
+Use your own OpenAI API key with access to `gpt-4o`. Keep this file untracked
+and do not share the key or put it in example JSON files.
+
+**Important:** `API_URL` must be the full chat-completions endpoint, **not**
+`https://api.openai.com/v1`. The engine posts directly to this URL; the base
+URL alone returns 404 and can cause `Expecting value: line 1 column 1` JSON
+parsing errors. The credential names read by this client are **`API_URL` and
+`API_KEY`**, not `OPENAI_BASE_URL` or `OPENAI_API_KEY`.
+
+The engine loads these values from `module/DBMosaic/llm/.env`; setting only
+shell variables is not a substitute for configuring that file. Select the
+model with `--model gpt-4o` when running the script.
+
+### Optional credential bootstrap
+
+If `.env` does not exist, `run_extractions.py` can create it using
+`--api-base https://api.openai.com/v1 --api-key ...` (or shell variables
+`API_BASE` and `API_KEY`). This is only a bootstrap convenience: it appends
+`/chat/completions` and writes `API_URL`/`API_KEY` to `.env`.
+
+An existing `.env` is **never overwritten**, so these flags do not override
+its credentials. Editing the file directly as above is the recommended setup
+and avoids putting the key in shell history.
+
+## 3. Put PDFs in the plan-review input directory
+
+```text
+examples/extract/plan_review/
+├── schema.json
+└── docs/
+    ├── sample_01.pdf
+    ├── sample_02.pdf
+    ├── sample_03.pdf
+    └── sample_04.pdf
+```
+
+Place your input PDFs directly in **`examples/extract/plan_review/docs/`**.
+The script scans `*.pdf` in that directory, not nested directories; use the
+lowercase `.pdf` extension. Each PDF should have a distinct filename stem.
+
+The supplied `schema.json` has three tables: `plan_review_report`, `rejection`,
+and `code_reference`. Table/field descriptions guide extraction, including:
+
+- Report IDs use the source filename stem, e.g. `sample_03`.
+- Rejection IDs use document-wide reading order, e.g. `sample_03-001`.
+- Printed reviewer labels such as `BPEL2` stay in `source_item_id`.
+- Citations require a code name and section/article number, e.g.
+  `2023 NEC 408.36`; edition years must not be invented.
+- Citations belong to the enclosing reviewer comment, not the first comment
+  on a page or in a multi-comment Docling block. For example, `2023 NEC 250`
+  in sample_01's BPEL2 belongs to `sample_01-002`, with citation ID
+  `sample_01-002-code-001`.
+
+These matching/ID instructions are LLM-guided, not a deterministic ID
+allocator or a guarantee of correct associations. The citation field also
+has a regex business rule; the engine reports its violations as warnings
+for verification/repair rather than blocking output.
+
+## 4. Run extraction
+
+```bash
+module/DBMosaic/.venv/bin/python run_extractions.py \
+  examples/extract/plan_review/docs \
+  examples/extract/plan_review/answer.json \
+  --model gpt-4o
+```
+
+The default schema is `schema.json` next to the `docs` directory. Output files
+are written alongside the specified `answer.json`:
+
+```text
+examples/extract/plan_review/
+├── answer.json                    # merged enriched tables
+├── answer_status.json             # processed count and filename → error lists
+├── docs_answer/
+│   ├── sample_01.json             # output for sample_01.pdf
+│   ├── sample_02.json
+│   ├── sample_03.json
+│   └── sample_04.json
+└── dbmosaic_work/
+    ├── docs_text/                 # filename context + page-marked Docling text
+    └── runs/<run_id>/             # engine logs, snapshots, violations and fixes
+```
+
+### Per-document output
+
+After `enrich_tables`, `write_document_answers` joins report rows, rejections,
+and their code references into **`docs_answer/<PDF stem>.json`**:
+
+```json
+{
+  "document": "sample_03.pdf",
+  "jurisdiction": "City of Austin, TX",
+  "rejections": [
+    {
+      "rejection_id": "sample_03-001",
+      "source_item_id": "BPEL1",
+      "discipline": "Electrical",
+      "raw_text": "Evidence text from the converted document",
+      "canonical_category": "Panelboard overcurrent protection",
+      "code_references": ["2023 NEC 408.36"],
+      "page": 3,
+      "source": "text",
+      "confidence": 0.9
+    }
+  ],
+  "excluded": [],
+  "warnings": []
+}
+```
+
+- `jurisdiction` is null when unidentified; no new jurisdiction is inferred
+  during this projection.
+- `source` is currently `text`, reflecting the text-based extraction pipeline;
+  it does not distinguish image or annotation origins.
+- `raw_text` preserves enriched Docling evidence. It may span multiple comments
+  or fall back to a full page; it is not guaranteed to be an isolated item.
+- `excluded` contains `{ "text": "...", "reason": "unmapped_evidence" }`
+  fragments not covered by extracted values. They are **not** confirmed
+  cleared comments.
+- `warnings` gathers per-file Docling/dependency warning and error logs,
+  Python warnings, structured conversion diagnostics, extraction violations,
+  and projection issues such as missing pages or ambiguous citation parents.
+  Conversion warnings are captured during the current run, not recoverable
+  from an old `answer.json` alone. Warning entries may be strings or structured
+  engine violation objects.
+- Per-document files are written only after successful enrichment, not from
+  the conversion or shared-engine failure paths.
+
+### Document status
+
+`answer_status.json` is separate from the unchanged table-based `answer.json`:
+
+```json
+{
+  "documents_processed": 3,
+  "documents_failed": {
+    "broken.pdf": ["PDF conversion failed: ValueError: invalid PDF"]
+  }
+}
+```
+
+Conversion failures are recorded per PDF and other PDFs continue. A PDF with
+no extractable text receives an error. If the shared engine run fails, every
+submitted document receives that shared error because the engine does not
+identify a single responsible PDF. A successful shared run counts converted
+PDFs as processed; that count is not a guarantee that every expected row was
+extracted. Status is also written on these conversion/shared-run failures.
+
+## 4a. Run extraction on a single document
+
+`run_extraction.py` runs the same DBMosaic pipeline (Docling conversion,
+agent loop, enrichment) for **one PDF** instead of a whole directory. It
+reuses the helpers from `run_extractions.py`, so schema handling, engine
+credentials, provenance enrichment, and output record format are identical;
+only the requested PDF is converted and submitted.
+
+```bash
+module/DBMosaic/.venv/bin/python run_extraction.py \
+  examples/extract/plan_review/docs/sample_01.pdf \
+  --model gpt-4o
+```
+
+Paths follow the same directory convention as the multi-document script:
+
+```text
+examples/extract/plan_review/
+├── schema.json                        # default schema (<docs_dir>/../schema.json)
+├── docs/sample_01.pdf                 # input document
+└── single/
+    ├── sample_01.json                 # single-entry output (default)
+    └── dbmosaic_work/                  # Docling text and engine run artifacts
+```
+
+- **Output filename is derived from the input filename** by default:
+`<docs_dir>/../single/<PDF stem>.json`. Override it with `--output PATH`.
+- `--schema` and `--work-dir` override the schema and work directory;
+`--model`, `--api-base`, `--api-key` and `--timeout` behave exactly as in
+`run_extractions.py`.
+
+The single-entry JSON has this shape:
+
+```json
+{
+  "document": "sample_01.pdf",
+  "run_id": "<engine run id>",
+  "tables": {
+    "plan_review_report": [ ... ],
+    "rejection": [ ... ],
+    "code_reference": [ ... ]
+  }
+}
+```
+
+Each record carries the same automatic provenance fields (`_page_number`,
+`_raw_text`, `_source_document`, `_confidence`, `warnings`, `excluded`) as
+the multi-document output. The same entry is also written into the run's
+`result.json` artifact.
+
+## 4b. Merge a single entry into a cumulative results file
+
+`add_to_results.py` accumulates single-entry JSONs into one big results file
+with the same table-to-records shape as the multi-document `answer.json`:
+
+```bash
+module/DBMosaic/.venv/bin/python add_to_results.py \
+  examples/extract/plan_review/single/sample_01.json \
+  --results examples/extract/plan_review/results.json
+```
+
+- `--results` selects the cumulative file (default `results.json` in the
+current directory); it is created if missing.
+- Records are appended per table. A record already present for the same
+table (same `tuple_id`, or the same values when `tuple_id` is empty) is
+**replaced** by the incoming one, so re-merging an entry never duplicates
+records.
+- `--replace` first removes the entry document's previous records from
+every table (matched via `_source_document`) before adding the new ones.
+
+This supports an incremental workflow: run `run_extraction.py` per document
+as it arrives, then merge each single-entry JSON into the shared results
+file, or seed the results file from a full `run_extractions.py` run and add
+new documents afterwards.
+
+## 5. Generate the category report later, without another extraction
+
+After extraction has produced `answer.json`, run:
+
+```bash
+module/DBMosaic/.venv/bin/python run_plan_review.py \
+  examples/extract/plan_review/docs \
+  examples/extract/plan_review/answer.json \
+  --report-only
+```
+
+**`--report-only` is important:** it reads existing results and makes no LLM
+calls. Keep the matching `answer_status.json` beside `answer.json` so document
+counts and errors come from the extraction run. Older answers without a status
+file use row coverage as a fallback, with an explicit explanation for any
+PDF considered failed.
+
+The runner creates both **`examples/extract/plan_review/answer_report.json`**
+and **`examples/extract/plan_review/answer_report.md`**. The Markdown version
+includes totals, top five categories, a category statistics table, evidence
+examples and per-document failure errors. Both outputs use the same summary;
+Markdown displays the fractional percentages as human-readable percentages.
+
+JSON report format:
+
+```json
+{
+  "documents_processed": 4,
+  "documents_failed": {},
+  "total_rejections": 20,
+  "categories": [
+    {
+      "canonical_category": "GFCI protection",
+      "occurrences": 3,
+      "documents": 2,
+      "pct_of_documents": 0.5,
+      "pct_of_rejections": 0.15,
+      "by_discipline": {"Electrical": 3},
+      "examples": ["Evidence example one", "Evidence example two"]
+    }
+  ],
+  "top_5": ["GFCI protection"]
+}
+```
+
+The example is illustrative, not an expected result for the supplied PDFs.
+Categories are sorted by occurrence count descending (alphabetically on ties).
+Each final rejection row counts once; document counts are distinct source
+PDFs. Percentages are **fractions**, with processed documents and total
+rejections as their respective denominators. Up to two distinct `_raw_text`
+examples are included per category. Missing categories/disciplines are grouped
+as `Uncategorized`/`Unspecified`. Category labels are not semantically merged.
+
+To run extraction **and** reporting together instead:
+
+```bash
+module/DBMosaic/.venv/bin/python run_plan_review.py \
+  examples/extract/plan_review/docs \
+  examples/extract/plan_review/answer.json \
+  --model gpt-4o
+```
+
+Without `--report-only`, this wrapper launches `run_extractions.py` first.
+If extraction fails with a status file, it writes a failure report without
+summarizing a stale answer, then exits nonzero.
+
+## CLI reference
+
+```text
+run_extractions.py DOCS_DIR [OUTPUT_JSON]
+  [--schema SCHEMA.json] [--model MODEL]
+  [--api-base URL] [--api-key KEY]
+  [--timeout SECONDS] [--work-dir DIR] [--status-output PATH]
+
+run_extraction.py DOC.pdf
+  [--schema SCHEMA.json] [--output OUT.json]
+  [--model MODEL] [--api-base URL] [--api-key KEY]
+  [--timeout SECONDS] [--work-dir DIR]
+
+add_to_results.py ENTRY.json [--results RESULTS.json] [--replace]
+```
+
+`run_extraction.py` arguments:
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `DOC.pdf` | required | Single source PDF |
+| `--schema` | `<docs_dir>/../schema.json` | Same schema format as `run_extractions.py` |
+| `--output` | `<docs_dir>/../single/<PDF stem>.json` | Single-entry output JSON, derived from the input filename |
+| `--model` | shell `MODEL`, otherwise `gpt-4o` | Model identifier |
+| `--api-base` / `--api-key` | shell `API_BASE` / `API_KEY` | Bootstrap only when `.env` is missing; not the engine's `API_URL` setting |
+| `--timeout` | shell `TIMEOUT`, otherwise `3600` | Agent run timeout in seconds |
+| `--work-dir` | `<output dir>/dbmosaic_work` | Converted text and engine artifacts |
+
+`add_to_results.py` arguments:
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `ENTRY.json` | required | Single-entry JSON written by `run_extraction.py` |
+| `--results` | `results.json` in the current directory | Cumulative table-to-records JSON; created if missing |
+| `--replace` | off | Drop the entry document's old records (via `_source_document`) before merging |
+
+`run_plan_review.py` accepts the same positional paths and forwards extraction
+options when launching extraction. Its additional options are:
+
+| Option | Meaning |
+|---|---|
+| `--report-only` | Read existing output; do not extract or call an LLM |
+| `--report PATH` | Override `<output stem>_report.json` |
+| `--markdown PATH` | Override the Markdown path (default: JSON report path with `.md` suffix) |
+| `--status-output PATH` | Read/write a custom extraction status file |
+
+Extraction options such as `--model` cannot be combined with `--report-only`.
+
+## Enrichment and engine artifacts
+
+The script converts schema `fields` to engine `attributes`, invokes
+`modules.services.Doc2DBService`, streams agent steps, and loads the best
+snapshot per table (preferring final-stage snapshots). Docling text includes
+the original PDF filename and `===== [Page N] =====` markers; table items are
+exported as Markdown.
+
+Merged rows have automatic provenance fields outside the target schema:
+
+| Field | Meaning |
+|---|---|
+| `_page_number` | Best matching source page using Docling provenance/evidence |
+| `_raw_text` | Matching Docling items/table rows, or fallback page text |
+| `_source_document` | Source PDF identified from engine evidence |
+| `_confidence` | `0.5 × fill + 0.2 × evidence + 0.3 × integrity` |
+| `warnings` | Engine violations annotated with repair status |
+| `excluded` | Evidence fragments not covered by that row's extracted values |
+
+`fill` is populated schema cells divided by field count; `evidence` is 1 when
+engine evidence exists; `integrity` is `max(0, 1 − 0.2 × unresolved violations)`.
+This is a heuristic, not a calibrated probability. Coverage/excluded analysis
+is per row, so another table may capture text excluded from the current row.
+
+Each `<work-dir>/runs/<run_id>/` contains `snapshots.jsonl`, `violations.jsonl`,
+`fixes.jsonl`, and engine logs. The script replaces the engine's plain
+`result.json` with `{ "run_id": "...", "tables": ... }` containing the same
+enriched tables as `answer.json`.
+
+For platform details, see the [platform README](docs/datamosaic.md) and the
+[DBMosaic engine](module/DBMosaic).
